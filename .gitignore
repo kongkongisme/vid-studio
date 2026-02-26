@@ -1,0 +1,26 @@
+node_modules
+dist
+out
+.DS_Store
+.eslintcache
+*.log*
+
+# 环境变量
+.env
+
+# vid-engine（Python 子项目）
+vid-engine/**/__pycache__/
+vid-engine/**/*.py[cod]
+vid-engine/**/*.pyo
+vid-engine/.venv/
+vid-engine/venv/
+vid-engine/env/
+vid-engine/output.txt
+vid-engine/*.txt.bak
+vid-engine/.cache/
+
+# vid-engine 输出的音频/字幕中间文件
+vid-engine/**/*.mp3
+vid-engine/**/*.m4a
+vid-engine/**/*.vtt
+vid-engine/**/*.json3
