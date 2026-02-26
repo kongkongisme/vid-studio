@@ -5,6 +5,11 @@ interface ParseOptions {
   skipVideo?: boolean
 }
 
+interface ApiChatMessage {
+  role: string
+  content: string
+}
+
 interface CookieImportResult {
   success: boolean
   browser?: string
@@ -32,6 +37,19 @@ const api = {
     const handler = (_: Electron.IpcRendererEvent, line: string): void => callback(line)
     ipcRenderer.on('parse-progress', handler)
     return () => ipcRenderer.removeListener('parse-progress', handler)
+  },
+
+  // 启动流式对话（调用 DeepSeek），完成后 resolve
+  chatWithVideo: (
+    messages: ApiChatMessage[]
+  ): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('chat-with-video', messages),
+
+  // 订阅流式 chunk，返回取消函数
+  onChatStreamChunk: (callback: (delta: string) => void): (() => void) => {
+    const handler = (_: Electron.IpcRendererEvent, delta: string): void => callback(delta)
+    ipcRenderer.on('chat-stream-chunk', handler)
+    return () => ipcRenderer.removeListener('chat-stream-chunk', handler)
   }
 }
 

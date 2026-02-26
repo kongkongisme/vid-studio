@@ -1,7 +1,7 @@
 {
   "name": "vid-studio",
-  "version": "1.0.0",
-  "description": "An Electron application with Vue and TypeScript",
+  "version": "0.1.0",
+  "description": "VidStudio 视析工作站 — 低成本 B 站视频结构化理解桌面应用",
   "main": "./out/main/index.js",
   "author": "example.com",
   "homepage": "https://electron-vite.org",
@@ -29,6 +29,7 @@
     "clsx": "^2.1.1",
     "electron-updater": "^6.3.9",
     "lucide-vue-next": "^0.575.0",
+    "marked": "^17.0.3",
     "radix-vue": "^1.9.17",
     "tailwind-merge": "^3.5.0"
   },

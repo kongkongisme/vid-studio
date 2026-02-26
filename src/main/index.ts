@@ -12,6 +12,18 @@ const vidEnginePath = is.dev
   ? join(process.cwd(), 'vid-engine')
   : join(process.resourcesPath, 'vid-engine')
 
+// ─── 工具：读取 .env key / 运行 Python 脚本 ──────────────
+
+async function readEnvKey(key: string): Promise<string> {
+  try {
+    const content = await readFile(join(vidEnginePath, '.env'), 'utf-8')
+    const match = content.match(new RegExp(`^${key}=(.+)$`, 'm'))
+    return match ? match[1].trim().replace(/^["']|["']$/g, '') : ''
+  } catch {
+    return ''
+  }
+}
+
 // ─── 工具：运行 Python 脚本并收集 stdout ──────────────────
 function runPython(scriptName: string, args: string[] = []): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -26,6 +38,7 @@ function runPython(scriptName: string, args: string[] = []): Promise<string> {
 // ─── 窗口创建 ────────────────────────────────────────────
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
+    title: 'VidStudio - 视析工作站',
     width: 1440,
     height: 900,
     minWidth: 900,
@@ -141,6 +154,72 @@ ipcMain.handle('stop-parse', () => {
   if (currentParseProc) {
     currentParseProc.kill()
     currentParseProc = null
+  }
+})
+
+// ─── IPC：LLM 对话（流式） ────────────────────────────────
+
+interface ApiChatMessage {
+  role: string
+  content: string
+}
+
+ipcMain.handle('chat-with-video', async (event, messages: ApiChatMessage[]) => {
+  const apiKey = await readEnvKey('DEEPSEEK_API_KEY')
+  if (!apiKey) {
+    return { success: false, error: '未配置 DEEPSEEK_API_KEY，请在 vid-engine/.env 中设置' }
+  }
+
+  try {
+    const response = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        messages,
+        temperature: 0.7,
+        max_tokens: 2000,
+        stream: true
+      })
+    })
+
+    if (!response.ok) {
+      return { success: false, error: `API 错误: ${response.status} ${await response.text()}` }
+    }
+
+    const reader = response.body?.getReader()
+    if (!reader) return { success: false, error: '无法读取响应流' }
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const data = line.slice(6).trim()
+        if (data === '[DONE]') continue
+        try {
+          const parsed = JSON.parse(data) as {
+            choices: { delta: { content?: string }; finish_reason: string | null }[]
+          }
+          const delta = parsed.choices[0]?.delta?.content
+          if (delta) event.sender.send('chat-stream-chunk', delta)
+        } catch {
+          // 跳过解析失败的行
+        }
+      }
+    }
+
+    return { success: true }
+  } catch (e) {
+    return { success: false, error: String(e) }
   }
 })
 

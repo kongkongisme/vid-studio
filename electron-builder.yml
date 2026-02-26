@@ -1,5 +1,5 @@
 appId: com.electron.app
-productName: vid-studio
+productName: VidStudio 视析工作站
 directories:
   buildResources: build
 files:
