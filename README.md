@@ -94,7 +94,7 @@ VidStudio 视析工作站是一款基于 Electron 的桌面应用，内置 B 站
 ### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/your-username/vid-studio.git
+git clone https://github.com/kongkongisme/vid-studio.git
 cd vid-studio
 ```
 
