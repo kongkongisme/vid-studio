@@ -1333,7 +1333,7 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
           </div>
 
           <!-- 时间轴列表 -->
-          <div v-else class="flex-1 overflow-y-auto">
+          <div v-if="timelineChunks.length" class="flex-1 overflow-y-auto">
             <div class="px-3 py-3 space-y-2">
               <div
                 v-for="chunk in filteredChunks"
