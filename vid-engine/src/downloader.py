@@ -7,8 +7,14 @@ import yt_dlp
 from src.models import VideoMeta
 
 
-# B站字幕语言优先级
-_SUBTITLE_LANGS = ["zh-Hans", "zh-CN", "zh", "en"]
+def _build_subtitle_langs(primary_lang: str) -> list:
+    """根据视频主语言动态构建字幕语言优先列表"""
+    if not primary_lang or primary_lang.startswith('zh'):
+        return ['zh-Hans', 'zh-CN', 'zh-TW', 'zh', 'en']
+    # 非中文：原语言优先，备选中文和英文
+    base = [primary_lang, 'zh-Hans', 'zh-CN', 'en']
+    seen: set = set()
+    return [lang for lang in base if not (lang in seen or seen.add(lang))]  # type: ignore[func-returns-value]
 
 
 def _build_cookie_opts() -> dict:
@@ -51,6 +57,7 @@ class VideoDownloader:
                 title=info.get("title", "未知标题"),
                 duration=int(info.get("duration") or 0),
                 uploader=info.get("uploader", ""),
+                language=info.get("language", "") or "",
             )
 
     def download_video(self, url: str) -> str:
@@ -81,16 +88,17 @@ class VideoDownloader:
             f"视频文件未找到，work_dir 内容：{list(self.work_dir.iterdir())}"
         )
 
-    def download_subtitle(self, url: str) -> Optional[str]:
+    def download_subtitle(self, url: str, primary_lang: str = '') -> Optional[str]:
         """尝试下载字幕，返回 .vtt 文件路径，失败返回 None"""
+        langs = _build_subtitle_langs(primary_lang)
         for write_subs, write_auto in [(True, False), (False, True)]:
-            result = self._try_download_subtitle(url, write_subs, write_auto)
+            result = self._try_download_subtitle(url, write_subs, write_auto, langs)
             if result:
                 return result
         return None
 
     def _try_download_subtitle(
-        self, url: str, write_subs: bool, write_auto: bool
+        self, url: str, write_subs: bool, write_auto: bool, langs: list
     ) -> Optional[str]:
         """执行一次字幕下载尝试"""
         outtmpl = str(self.work_dir / "%(id)s.%(ext)s")
@@ -99,7 +107,7 @@ class VideoDownloader:
             "skip_download": True,
             "writesubtitles": write_subs,
             "writeautomaticsub": write_auto,
-            "subtitleslangs": _SUBTITLE_LANGS,
+            "subtitleslangs": langs,
             "subtitlesformat": "vtt/json3/best",
             "convertsubtitles": "vtt",
             "outtmpl": outtmpl,
@@ -110,7 +118,7 @@ class VideoDownloader:
                 info = ydl.extract_info(url, download=True)
                 video_id = info.get("id", "")
 
-            for lang in _SUBTITLE_LANGS:
+            for lang in langs:
                 vtt_path = self.work_dir / f"{video_id}.{lang}.vtt"
                 if vtt_path.exists() and vtt_path.stat().st_size > 0:
                     return str(vtt_path)
