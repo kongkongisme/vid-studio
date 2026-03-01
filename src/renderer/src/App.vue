@@ -706,6 +706,13 @@ async function deleteHistoryItem(id: string): Promise<void> {
   }
 }
 
+async function toggleHistoryPanel(): Promise<void> {
+  showHistoryPanel.value = !showHistoryPanel.value
+  if (showHistoryPanel.value) {
+    await loadHistory()
+  }
+}
+
 async function loadHistoryItem(item: HistoryItem): Promise<void> {
   url.value = item.url
   skipVideo.value = item.mode === 'asr'
@@ -1053,7 +1060,7 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
       <!-- 历史记录按钮 -->
       <div class="relative shrink-0">
         <button
-          @click="showHistoryPanel = !showHistoryPanel"
+          @click="toggleHistoryPanel"
           class="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition-colors"
           :class="showHistoryPanel ? 'text-blue-500 bg-blue-50 border-blue-200' : ''"
           title="解析历史"
@@ -1064,10 +1071,11 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
         <!-- 历史下拉面板 -->
         <div
           v-if="showHistoryPanel"
-          class="absolute top-full right-0 mt-2 w-80 max-h-96 bg-white rounded-xl shadow-xl border border-slate-200 z-50 overflow-hidden flex flex-col"
+          class="absolute top-full right-0 mt-2 w-80 bg-white rounded-xl shadow-xl border border-slate-200 z-50 overflow-hidden flex flex-col"
+          style="max-height: 400px;"
         >
           <!-- 搜索框 -->
-          <div class="p-2 border-b border-slate-100">
+          <div class="p-2 border-b border-slate-100 shrink-0">
             <div class="relative">
               <IconSearch class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
               <input
@@ -1079,53 +1087,58 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
           </div>
 
           <!-- 历史列表 -->
-          <div class="flex-1 overflow-y-auto p-1">
-            <div
-              v-for="item in filteredHistory"
-              :key="item.id"
-              @click="loadHistoryItem(item)"
-              class="flex items-center gap-2 p-2 rounded-lg hover:bg-slate-50 cursor-pointer group"
-            >
-              <!-- 平台图标 -->
-              <img
-                :src="getPlatformIcon(item.platform)"
-                class="w-5 h-5 rounded"
-                @error="(e) => { const t = e.target as HTMLImageElement; if (t) t.style.display='none' }"
-              />
-
-              <!-- 信息 -->
-              <div class="flex-1 min-w-0">
-                <p class="text-sm text-slate-800 truncate">{{ item.title }}</p>
-                <div class="flex items-center gap-1.5 text-xs text-slate-400">
-                  <span>{{ formatTime(item.createdAt) }}</span>
-                  <span class="text-slate-200">·</span>
-                  <span :class="item.mode === 'asr' ? 'text-blue-400' : 'text-amber-400'">
-                    {{ item.mode === 'asr' ? 'ASR' : '视觉' }}
-                  </span>
-                </div>
-              </div>
-
-              <!-- 操作按钮 -->
-              <button
-                @click.stop="toggleFavoriteHistory(item.id)"
-                class="opacity-0 group-hover:opacity-100 p-1 transition-opacity"
+          <div class="flex-1 overflow-y-auto p-1" style="min-height: 100px; max-height: 320px;">
+            <!-- 有数据时显示列表 -->
+            <template v-if="filteredHistory.length > 0">
+              <div
+                v-for="item in filteredHistory"
+                :key="item.id"
+                @click="loadHistoryItem(item)"
+                class="flex items-center gap-2 p-2 rounded-lg hover:bg-slate-50 cursor-pointer group"
               >
-                <IconStar
-                  :class="item.favorited ? 'text-amber-400 fill-current' : 'text-slate-300'"
-                  class="w-4 h-4"
+                <!-- 平台图标 -->
+                <img
+                  :src="getPlatformIcon(item.platform)"
+                  class="w-5 h-5 rounded"
+                  @error="(e) => { const t = e.target as HTMLImageElement; if (t) t.style.display='none' }"
                 />
-              </button>
-              <button
-                @click.stop="deleteHistoryItem(item.id)"
-                class="opacity-0 group-hover:opacity-100 p-1 text-slate-300 hover:text-red-400 transition-opacity"
-              >
-                <IconTrash class="w-4 h-4" />
-              </button>
-            </div>
+
+                <!-- 信息 -->
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm text-slate-800 truncate">{{ item.title }}</p>
+                  <div class="flex items-center gap-1.5 text-xs text-slate-400">
+                    <span>{{ formatTime(item.createdAt) }}</span>
+                    <span class="text-slate-200">·</span>
+                    <span :class="item.mode === 'asr' ? 'text-blue-400' : 'text-amber-400'">
+                      {{ item.mode === 'asr' ? 'ASR' : '视觉' }}
+                    </span>
+                  </div>
+                </div>
+
+                <!-- 操作按钮 -->
+                <button
+                  @click.stop="toggleFavoriteHistory(item.id)"
+                  class="opacity-0 group-hover:opacity-100 p-1 transition-opacity"
+                >
+                  <IconStar
+                    :class="item.favorited ? 'text-amber-400 fill-current' : 'text-slate-300'"
+                    class="w-4 h-4"
+                  />
+                </button>
+                <button
+                  @click.stop="deleteHistoryItem(item.id)"
+                  class="opacity-0 group-hover:opacity-100 p-1 text-slate-300 hover:text-red-400 transition-opacity"
+                >
+                  <IconTrash class="w-4 h-4" />
+                </button>
+              </div>
+            </template>
 
             <!-- 空状态 -->
-            <div v-if="filteredHistory.length === 0" class="p-4 text-center">
+            <div v-else class="p-4 text-center flex flex-col items-center justify-center h-full">
+              <IconHistory class="w-8 h-8 text-slate-200 mb-2" />
               <p class="text-sm text-slate-400">暂无历史记录</p>
+              <p class="text-xs text-slate-300 mt-1">解析视频后将自动保存</p>
             </div>
           </div>
         </div>
