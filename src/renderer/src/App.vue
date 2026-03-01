@@ -888,8 +888,8 @@ async function checkClipboard(): Promise<void> {
     // 已输入或已显示的链接不再提示
     if (trimmed === url.value || trimmed === clipboardDetectedUrl.value) return
 
-    // 验证是否为有效视频链接
-    if (validateUrl(trimmed)) {
+    // 验证是否为有效视频链接（validateUrl 返回 null 表示验证通过）
+    if (!validateUrl(trimmed)) {
       clipboardDetectedUrl.value = trimmed
       showClipboardToast.value = true
 
