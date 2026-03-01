@@ -84,14 +84,15 @@ def _run_video_understanding(
 
 
 def _get_segments(
-    downloader: VideoDownloader, url: str
+    downloader: VideoDownloader, url: str, primary_lang: str = ''
 ) -> List[SubtitleSegment]:
     """
     获取字幕片段：优先下载字幕，否则走 ASR
 
+    primary_lang：优先选择的字幕语言（来自视频元信息），透传给下载器
     抛出 RuntimeError 而非 sys.exit，让调用方统一处理
     """
-    subtitle_file = downloader.download_subtitle(url)
+    subtitle_file = downloader.download_subtitle(url, primary_lang)
     if subtitle_file:
         print(f"  找到字幕：{Path(subtitle_file).name}")
         segments = parse(subtitle_file)
@@ -166,7 +167,7 @@ def run(url: str, output_path: str, options: Optional[PipelineOptions] = None) -
             print("\n已跳过视频理解（--skip-video）")
             print("\n尝试获取字幕...")
             try:
-                segments = _get_segments(downloader, url)
+                segments = _get_segments(downloader, url, meta.language)
             except RuntimeError as e:
                 print(f"错误：{e}")
                 sys.exit(1)
@@ -175,7 +176,7 @@ def run(url: str, output_path: str, options: Optional[PipelineOptions] = None) -
             print("\n并行执行视频理解 + 字幕/语音获取...")
             with ThreadPoolExecutor(max_workers=2) as executor:
                 vu_future = executor.submit(_run_video_understanding, downloader, url)
-                seg_future = executor.submit(_get_segments, downloader, url)
+                seg_future = executor.submit(_get_segments, downloader, url, meta.language)
 
                 try:
                     segments = seg_future.result()
