@@ -21,6 +21,7 @@ declare global {
     electron: ElectronAPI
     api: {
       importBrowserCookies: () => Promise<CookieImportResult>
+      importYoutubeCookies: () => Promise<CookieImportResult>
       parseVideo: (
         url: string,
         options?: ParseOptions

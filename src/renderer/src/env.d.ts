@@ -11,6 +11,12 @@ interface Window {
       count?: number
       error?: string
     }>
+    importYoutubeCookies: () => Promise<{
+      success: boolean
+      browser?: string
+      count?: number
+      error?: string
+    }>
     parseVideo: (
       url: string,
       options?: { skipVideo?: boolean }

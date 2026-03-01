@@ -1,5 +1,16 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted, computed } from 'vue'
+import {
+  type Platform,
+  detectPlatform,
+  extractVideoId,
+  validateUrl,
+  getWebviewUrl,
+  getWebviewSession,
+  getFullscreenScript,
+  getSeekScript,
+  getSeekFallbackUrl,
+} from './platform'
 import { marked } from 'marked'
 
 // 配置 marked：启用换行符转 <br>，禁用 mangle/headerIds（避免警告）
@@ -67,7 +78,8 @@ const appVersion = __APP_VERSION__
 const url = ref('')
 const loading = ref(false)
 const errorMsg = ref('')
-const bvid = ref('')
+const videoId = ref('')
+const currentPlatform = ref<Platform | null>(null)
 const videoUrl = ref('')
 const progressLog = ref<string[]>([])
 const timelineChunks = ref<TimelineChunk[]>([])
@@ -83,6 +95,10 @@ const webviewRef = ref<any>(null)
 // Cookie 同步状态
 const cookieStatus = ref<'idle' | 'loading' | 'ok' | 'fail'>('idle')
 const cookieBrowser = ref('')
+
+// YouTube Cookie 同步状态
+const cookieYtStatus = ref<'idle' | 'loading' | 'ok' | 'fail'>('idle')
+const cookieYtBrowser = ref('')
 
 // 网页全屏状态
 const isWebFullscreen = ref(false)
@@ -111,6 +127,10 @@ const latestProgress = computed(() => {
   return '初始化中...'
 })
 
+const webviewSession = computed(() =>
+  currentPlatform.value ? getWebviewSession(currentPlatform.value) : 'persist:bilibili'
+)
+
 const cookieTooltip = computed((): [string, string] => {
   if (cookieStatus.value === 'ok')
     return [`已用 ${cookieBrowser.value} 账号登录 B 站`, '视频将以最高画质播放，无需手动登录']
@@ -119,19 +139,15 @@ const cookieTooltip = computed((): [string, string] => {
   return ['正在读取浏览器登录状态...', '']
 })
 
+const cookieYtTooltip = computed((): [string, string] => {
+  if (cookieYtStatus.value === 'ok')
+    return [`已用 ${cookieYtBrowser.value} 账号登录 YouTube`, '']
+  if (cookieYtStatus.value === 'fail')
+    return ['未检测到 YouTube 登录信息', '请先在 Edge 或 Chrome 中登录 YouTube']
+  return ['正在读取 YouTube 登录状态...', '']
+})
+
 // ─── 工具函数 ─────────────────────────────────────────────
-
-function extractBvid(rawUrl: string): string | null {
-  const m = rawUrl.match(/BV[a-zA-Z0-9]+/)
-  return m ? m[0] : null
-}
-
-function validateBilibiliUrl(rawUrl: string): string | null {
-  const trimmed = rawUrl.trim()
-  if (!trimmed) return '请输入 B 站视频链接'
-  if (!extractBvid(trimmed)) return '链接不合法，请输入包含 BV 号的 B 站视频链接'
-  return null
-}
 
 function timeToSeconds(time: string): number {
   const parts = time.split(':').map(Number)
@@ -249,30 +265,28 @@ const HOLD_PLAY_SCRIPT = `
 `
 
 function injectWebFullscreen(wv: any): void {
-  const fullscreenScript = `
-    (function() {
-      var selectors = [
-        '.bpx-player-ctrl-web',
-        '.squirtle-pagefullscreen-icon',
-        '[data-key="web-full-screen"]'
-      ];
-      for (var i = 0; i < selectors.length; i++) {
-        var btn = document.querySelector(selectors[i]);
-        if (btn) { btn.click(); return true; }
-      }
-      return false;
-    })()
-  `
+  if (!currentPlatform.value) return
+
   const releaseScript = `if (window.__vsReleasePlay) window.__vsReleasePlay();`
 
   const showAndPlay = (): void => {
     isWebFullscreen.value = true
-    wv.executeJavaScript(releaseScript).catch(() => {})
+    if (currentPlatform.value === 'bilibili') {
+      wv.executeJavaScript(releaseScript).catch(() => {})
+    }
   }
 
+  // YouTube embed 立即填满 webview，直接标记可见
+  if (currentPlatform.value === 'youtube') {
+    showAndPlay()
+    return
+  }
+
+  // B 站：重试点击网页全屏按钮
+  const script = getFullscreenScript(currentPlatform.value)
   let retries = 0
   const attempt = (): void => {
-    wv.executeJavaScript(fullscreenScript)
+    wv.executeJavaScript(script)
       .then((ok: boolean) => {
         if (ok) {
           showAndPlay()
@@ -287,7 +301,7 @@ function injectWebFullscreen(wv: any): void {
   setTimeout(attempt, 2000)
 }
 
-watch(bvid, async (newVal, oldVal) => {
+watch(videoId, async (newVal, oldVal) => {
   if (newVal !== oldVal) {
     isWebFullscreen.value = false
   }
@@ -297,9 +311,12 @@ watch(bvid, async (newVal, oldVal) => {
   videoLoaded.value = false
   wv.addEventListener('did-finish-load', () => {
     videoLoaded.value = true
-    wv.executeJavaScript(HOLD_PLAY_SCRIPT).catch(() => {})
+    // YouTube embed 自带 autoplay，无需 hold；B 站需要先 hold 再全屏
+    if (currentPlatform.value === 'bilibili') {
+      wv.executeJavaScript(HOLD_PLAY_SCRIPT).catch(() => {})
+    }
     injectWebFullscreen(wv)
-  })
+  }, { once: true })
 })
 
 // ─── 视频跳转 ─────────────────────────────────────────────
@@ -307,19 +324,15 @@ watch(bvid, async (newVal, oldVal) => {
 async function seekTo(seconds: number): Promise<void> {
   if (webviewRef.value && videoLoaded.value) {
     try {
-      const ok = await webviewRef.value.executeJavaScript(
-        `(function(){
-          const v = document.querySelector('video');
-          if (v) { v.currentTime = ${seconds}; v.play(); return true; }
-          return false;
-        })()`
-      )
+      const ok = await webviewRef.value.executeJavaScript(getSeekScript(seconds))
       if (ok) return
     } catch {
       // 降级重载
     }
   }
-  videoUrl.value = `https://www.bilibili.com/video/${bvid.value}?t=${seconds}`
+  if (videoId.value && currentPlatform.value) {
+    videoUrl.value = getSeekFallbackUrl(videoId.value, currentPlatform.value, seconds)
+  }
 }
 
 function onChunkClick(chunk: TimelineChunk): void {
@@ -509,12 +522,13 @@ async function sendChat(): Promise<void> {
 // ─── 解析视频 ─────────────────────────────────────────────
 
 async function parseVideo(): Promise<void> {
-  const validationError = validateBilibiliUrl(url.value)
+  const validationError = validateUrl(url.value)
   if (validationError) {
     errorMsg.value = validationError
     return
   }
-  const id = extractBvid(url.value)!
+  const platform = detectPlatform(url.value.trim())!
+  const id = extractVideoId(url.value.trim(), platform)!
 
   errorMsg.value = ''
   progressLog.value = []
@@ -525,14 +539,15 @@ async function parseVideo(): Promise<void> {
   loading.value = true
 
   // 先销毁当前 webview，停止后台播放
-  bvid.value = ''
+  videoId.value = ''
   videoUrl.value = ''
   videoLoaded.value = false
   isWebFullscreen.value = false
   await nextTick()
 
-  bvid.value = id
-  videoUrl.value = `https://www.bilibili.com/video/${id}`
+  currentPlatform.value = platform
+  videoId.value = id
+  videoUrl.value = getWebviewUrl(id, platform)
 
   // 解析新视频时自动清空对话
   clearChat()
@@ -574,7 +589,7 @@ async function pasteAndParse(): Promise<void> {
     errorMsg.value = '无法读取剪贴板，请手动粘贴链接'
     return
   }
-  const validationError = validateBilibiliUrl(text)
+  const validationError = validateUrl(text)
   if (validationError) {
     errorMsg.value = validationError
     return
@@ -588,8 +603,9 @@ async function pasteAndParse(): Promise<void> {
 // 层 1：普通导航拦截（外链、手动点击其他视频）
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function preventAutoNext(e: any): void {
-  const targetBvid = extractBvid(e.url ?? '')
-  if (targetBvid && targetBvid !== bvid.value) {
+  if (!currentPlatform.value) return
+  const targetId = extractVideoId(e.url ?? '', currentPlatform.value)
+  if (targetId && targetId !== videoId.value) {
     e.preventDefault()
   }
 }
@@ -597,16 +613,16 @@ function preventAutoNext(e: any): void {
 // 层 2：SPA 内部跳转兜底（B 站连播通过 history.pushState 换视频）
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function onWebviewNavigateInPage(e: any): void {
-  if (!e.isMainFrame) return
-  const targetBvid = extractBvid(e.url ?? '')
-  if (targetBvid && targetBvid !== bvid.value) {
+  if (!e.isMainFrame || currentPlatform.value !== 'bilibili') return
+  const targetId = extractVideoId(e.url ?? '', 'bilibili')
+  if (targetId && targetId !== videoId.value) {
     webviewRef.value?.loadURL(videoUrl.value)
   }
 }
 
 // 层 3：注入 JS，监听连播倒计时 DOM 出现后立即关闭
 function onWebviewDomReady(): void {
-  if (!webviewRef.value) return
+  if (!webviewRef.value || currentPlatform.value !== 'bilibili') return
   webviewRef.value.executeJavaScript(`
     (function () {
       const CLOSE_SELECTORS = [
@@ -638,8 +654,20 @@ async function importBrowserCookies(): Promise<void> {
   }
 }
 
+async function importYoutubeCookies(): Promise<void> {
+  cookieYtStatus.value = 'loading'
+  const result = await window.api.importYoutubeCookies()
+  if (result.success && result.browser) {
+    cookieYtStatus.value = 'ok'
+    cookieYtBrowser.value = result.browser === 'edge' ? 'Edge' : 'Chrome'
+  } else {
+    cookieYtStatus.value = 'fail'
+  }
+}
+
 onMounted(() => {
   importBrowserCookies()
+  importYoutubeCookies()
 })
 </script>
 
@@ -697,7 +725,7 @@ onMounted(() => {
         </button>
       </div>
 
-      <!-- 浏览器账号状态 -->
+      <!-- B 站浏览器账号状态 -->
       <div class="relative group/cookie shrink-0">
         <div class="w-7 h-7 flex items-center justify-center rounded-md bg-slate-50 border border-slate-200 cursor-default transition-colors group-hover/cookie:bg-slate-100">
           <IconLoader2 v-if="cookieStatus === 'loading'" class="w-3.5 h-3.5 text-slate-400 animate-spin" />
@@ -707,6 +735,20 @@ onMounted(() => {
         <div class="absolute top-full right-0 mt-2 w-max max-w-[260px] px-3 py-2.5 bg-slate-800 rounded-xl shadow-xl opacity-0 group-hover/cookie:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
           <p class="text-xs font-medium text-white leading-snug">{{ cookieTooltip[0] }}</p>
           <p v-if="cookieTooltip[1]" class="text-[11px] text-slate-400 mt-1 leading-snug">{{ cookieTooltip[1] }}</p>
+          <div class="absolute bottom-full right-2.5 border-[5px] border-transparent border-b-slate-800" />
+        </div>
+      </div>
+
+      <!-- YouTube 浏览器账号状态 -->
+      <div class="relative group/ytcookie shrink-0">
+        <div class="w-7 h-7 flex items-center justify-center rounded-md bg-slate-50 border border-slate-200 cursor-default transition-colors group-hover/ytcookie:bg-slate-100">
+          <IconLoader2 v-if="cookieYtStatus === 'loading'" class="w-3.5 h-3.5 text-slate-400 animate-spin" />
+          <IconCircleCheck v-else-if="cookieYtStatus === 'ok'" class="w-3.5 h-3.5 text-red-500" />
+          <IconCircleX v-else-if="cookieYtStatus === 'fail'" class="w-3.5 h-3.5 text-amber-400" />
+        </div>
+        <div class="absolute top-full right-0 mt-2 w-max max-w-[260px] px-3 py-2.5 bg-slate-800 rounded-xl shadow-xl opacity-0 group-hover/ytcookie:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
+          <p class="text-xs font-medium text-white leading-snug">{{ cookieYtTooltip[0] }}</p>
+          <p v-if="cookieYtTooltip[1]" class="text-[11px] text-slate-400 mt-1 leading-snug">{{ cookieYtTooltip[1] }}</p>
           <div class="absolute bottom-full right-2.5 border-[5px] border-transparent border-b-slate-800" />
         </div>
       </div>
@@ -756,10 +798,10 @@ onMounted(() => {
       <!-- 左：视频播放器 -->
       <div class="flex-1 bg-slate-100 flex items-center justify-center relative min-w-0 overflow-hidden">
         <webview
-          v-if="bvid"
+          v-if="videoId"
           ref="webviewRef"
           :src="videoUrl"
-          partition="persist:bilibili"
+          :partition="webviewSession"
           class="w-full h-full"
           allowpopups="true"
           useragent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0"
@@ -769,10 +811,10 @@ onMounted(() => {
         />
 
         <!-- 空状态 -->
-        <div v-if="!bvid" class="text-center pointer-events-none">
+        <div v-if="!videoId" class="text-center pointer-events-none">
           <IconVideo class="w-16 h-16 mx-auto mb-3 text-slate-300" />
-          <p class="text-sm font-medium text-slate-400">输入 B 站链接，一键解析</p>
-          <p class="text-xs text-slate-300 mt-1">支持 BV 号格式</p>
+          <p class="text-sm font-medium text-slate-400">输入 B 站 / YouTube 链接，一键解析</p>
+          <p class="text-xs text-slate-300 mt-1">支持 BV 号 / YouTube 视频链接</p>
         </div>
 
         <!-- 遮罩：全屏激活前隐藏初始加载页面 -->
@@ -783,7 +825,7 @@ onMounted(() => {
           leave-to-class="opacity-0"
         >
           <div
-            v-if="bvid && !isWebFullscreen"
+            v-if="videoId && !isWebFullscreen"
             class="absolute inset-0 bg-slate-100 flex flex-col items-center justify-center gap-3 z-10"
           >
             <div class="w-9 h-9 rounded-full border-[2.5px] border-slate-200 border-t-blue-400 animate-spin" />
