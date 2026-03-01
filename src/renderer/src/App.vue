@@ -131,20 +131,33 @@ const webviewSession = computed(() =>
   currentPlatform.value ? getWebviewSession(currentPlatform.value) : 'persist:bilibili'
 )
 
-const cookieTooltip = computed((): [string, string] => {
-  if (cookieStatus.value === 'ok')
-    return [`已用 ${cookieBrowser.value} 账号登录 B 站`, '视频将以最高画质播放，无需手动登录']
-  if (cookieStatus.value === 'fail')
-    return ['未检测到 B 站登录信息', '请先在 Edge 或 Chrome 中登录 B 站，再重启此应用']
-  return ['正在读取浏览器登录状态...', '']
+const cookieCombinedStatus = computed(() => {
+  if (cookieStatus.value === 'loading' || cookieYtStatus.value === 'loading') return 'loading'
+  if (cookieStatus.value === 'ok' && cookieYtStatus.value === 'ok') return 'ok'
+  if (cookieStatus.value === 'fail' || cookieYtStatus.value === 'fail') return 'warn'
+  return 'idle'
 })
 
-const cookieYtTooltip = computed((): [string, string] => {
-  if (cookieYtStatus.value === 'ok')
-    return [`已用 ${cookieYtBrowser.value} 账号登录 YouTube`, '']
-  if (cookieYtStatus.value === 'fail')
-    return ['未检测到 YouTube 登录信息', '请先在 Edge 或 Chrome 中登录 YouTube']
-  return ['正在读取 YouTube 登录状态...', '']
+const cookieCombinedTooltip = computed((): [string, string] => {
+  if (cookieCombinedStatus.value === 'loading') return ['正在同步浏览器账号...', '']
+  const biliOk = cookieStatus.value === 'ok'
+  const ytOk = cookieYtStatus.value === 'ok'
+  if (biliOk && ytOk)
+    return [
+      `B站（${cookieBrowser.value}）· YouTube（${cookieYtBrowser.value}）已登录`,
+      '视频将以账号权限播放，无需手动登录'
+    ]
+  if (biliOk)
+    return [
+      `B站（${cookieBrowser.value}）账号已同步`,
+      '未检测到 YouTube 账号，请先在浏览器中登录 YouTube'
+    ]
+  if (ytOk)
+    return [
+      `YouTube（${cookieYtBrowser.value}）账号已同步`,
+      '未检测到 B 站账号，请先在浏览器中登录 B 站'
+    ]
+  return ['未检测到浏览器账号', '请先在 Edge / Chrome / Firefox 中登录 B 站或 YouTube']
 })
 
 // ─── 工具函数 ─────────────────────────────────────────────
@@ -276,7 +289,13 @@ function injectWebFullscreen(wv: any): void {
     }
   }
 
-  // 重试点击全屏按钮（B 站 / YouTube watch 页均需注入）
+  // YouTube watch 页直接标记可见，不注入全屏脚本（避免触发 OS 全屏）
+  if (currentPlatform.value === 'youtube') {
+    showAndPlay()
+    return
+  }
+
+  // B 站：重试点击网页全屏按钮
   const script = getFullscreenScript(currentPlatform.value)
   let retries = 0
   const attempt = (): void => {
@@ -305,7 +324,7 @@ watch(videoId, async (newVal, oldVal) => {
   videoLoaded.value = false
   wv.addEventListener('did-finish-load', () => {
     videoLoaded.value = true
-    // YouTube embed 自带 autoplay，无需 hold；B 站需要先 hold 再全屏
+    // B 站需要先 hold 再全屏；YouTube watch 页由 injectWebFullscreen 直接处理
     if (currentPlatform.value === 'bilibili') {
       wv.executeJavaScript(HOLD_PLAY_SCRIPT).catch(() => {})
     }
@@ -719,31 +738,16 @@ onMounted(() => {
         </button>
       </div>
 
-      <!-- B 站浏览器账号状态 -->
+      <!-- 浏览器账号状态（B站 + YouTube 合并） -->
       <div class="relative group/cookie shrink-0">
         <div class="w-7 h-7 flex items-center justify-center rounded-md bg-slate-50 border border-slate-200 cursor-default transition-colors group-hover/cookie:bg-slate-100">
-          <IconLoader2 v-if="cookieStatus === 'loading'" class="w-3.5 h-3.5 text-slate-400 animate-spin" />
-          <IconCircleCheck v-else-if="cookieStatus === 'ok'" class="w-3.5 h-3.5 text-emerald-500" />
-          <IconCircleX v-else-if="cookieStatus === 'fail'" class="w-3.5 h-3.5 text-amber-400" />
+          <IconLoader2 v-if="cookieCombinedStatus === 'loading'" class="w-3.5 h-3.5 text-slate-400 animate-spin" />
+          <IconCircleCheck v-else-if="cookieCombinedStatus === 'ok'" class="w-3.5 h-3.5 text-emerald-500" />
+          <IconCircleX v-else-if="cookieCombinedStatus === 'warn'" class="w-3.5 h-3.5 text-amber-400" />
         </div>
-        <div class="absolute top-full right-0 mt-2 w-max max-w-[260px] px-3 py-2.5 bg-slate-800 rounded-xl shadow-xl opacity-0 group-hover/cookie:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
-          <p class="text-xs font-medium text-white leading-snug">{{ cookieTooltip[0] }}</p>
-          <p v-if="cookieTooltip[1]" class="text-[11px] text-slate-400 mt-1 leading-snug">{{ cookieTooltip[1] }}</p>
-          <div class="absolute bottom-full right-2.5 border-[5px] border-transparent border-b-slate-800" />
-        </div>
-      </div>
-
-      <!-- YouTube 账号状态 -->
-      <div class="relative group/cookie-yt shrink-0">
-        <div class="w-7 h-7 flex items-center justify-center rounded-md bg-slate-50 border border-slate-200 cursor-default transition-colors group-hover/cookie-yt:bg-slate-100">
-          <IconLoader2 v-if="cookieYtStatus === 'loading'" class="w-3.5 h-3.5 text-slate-400 animate-spin" />
-          <IconCircleCheck v-else-if="cookieYtStatus === 'ok'" class="w-3.5 h-3.5 text-emerald-500" />
-          <IconCircleX v-else-if="cookieYtStatus === 'fail'" class="w-3.5 h-3.5 text-amber-400" />
-          <span v-else class="text-[10px] font-bold text-slate-400">YT</span>
-        </div>
-        <div class="absolute top-full right-0 mt-2 w-max max-w-[260px] px-3 py-2.5 bg-slate-800 rounded-xl shadow-xl opacity-0 group-hover/cookie-yt:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
-          <p class="text-xs font-medium text-white leading-snug">{{ cookieYtTooltip[0] }}</p>
-          <p v-if="cookieYtTooltip[1]" class="text-[11px] text-slate-400 mt-1 leading-snug">{{ cookieYtTooltip[1] }}</p>
+        <div class="absolute top-full right-0 mt-2 w-max max-w-[280px] px-3 py-2.5 bg-slate-800 rounded-xl shadow-xl opacity-0 group-hover/cookie:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
+          <p class="text-xs font-medium text-white leading-snug">{{ cookieCombinedTooltip[0] }}</p>
+          <p v-if="cookieCombinedTooltip[1]" class="text-[11px] text-slate-400 mt-1 leading-snug">{{ cookieCombinedTooltip[1] }}</p>
           <div class="absolute bottom-full right-2.5 border-[5px] border-transparent border-b-slate-800" />
         </div>
       </div>

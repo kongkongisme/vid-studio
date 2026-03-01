@@ -99,7 +99,7 @@ def main():
     parser.add_argument('--site', choices=['bilibili', 'youtube'], default='bilibili', help='目标站点（默认 bilibili）')
     args = parser.parse_args()
 
-    browsers = [args.browser] if args.browser else ['edge', 'chrome']
+    browsers = [args.browser] if args.browser else ['chrome', 'edge', 'firefox']
     site = args.site
 
     for browser in browsers:

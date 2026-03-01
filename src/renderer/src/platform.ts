@@ -47,17 +47,9 @@ export function getWebviewSession(platform: Platform): string {
 
 // ─── 注入脚本 ─────────────────────────────────────────────
 
-/** 两平台全屏按钮注入脚本 */
+/** B 站网页全屏按钮注入脚本；YouTube watch 页直接显示，不注入（避免触发 OS 全屏） */
 export function getFullscreenScript(platform: Platform): string {
-  if (platform === 'youtube') {
-    return `
-      (function() {
-        var btn = document.querySelector('.ytp-fullscreen-button');
-        if (btn) { btn.click(); return true; }
-        return false;
-      })()
-    `
-  }
+  if (platform === 'youtube') return '(function(){ return true; })()'
   return `
     (function() {
       var selectors = [
