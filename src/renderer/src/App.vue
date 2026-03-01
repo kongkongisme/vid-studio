@@ -697,7 +697,7 @@ onMounted(() => {
         <IconSearch class="w-3.5 h-3.5 text-slate-400 shrink-0" />
         <input
           v-model="url"
-          placeholder="粘贴 B 站视频链接..."
+          placeholder="粘贴 B 站 / YouTube 视频链接..."
           class="flex-1 bg-transparent outline-none text-sm text-slate-800 placeholder:text-slate-400"
           @keydown.enter="parseVideo"
         />
@@ -739,14 +739,15 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- YouTube 浏览器账号状态 -->
-      <div class="relative group/ytcookie shrink-0">
-        <div class="w-7 h-7 flex items-center justify-center rounded-md bg-slate-50 border border-slate-200 cursor-default transition-colors group-hover/ytcookie:bg-slate-100">
+      <!-- YouTube 账号状态 -->
+      <div class="relative group/cookie-yt shrink-0">
+        <div class="w-7 h-7 flex items-center justify-center rounded-md bg-slate-50 border border-slate-200 cursor-default transition-colors group-hover/cookie-yt:bg-slate-100">
           <IconLoader2 v-if="cookieYtStatus === 'loading'" class="w-3.5 h-3.5 text-slate-400 animate-spin" />
-          <IconCircleCheck v-else-if="cookieYtStatus === 'ok'" class="w-3.5 h-3.5 text-red-500" />
+          <IconCircleCheck v-else-if="cookieYtStatus === 'ok'" class="w-3.5 h-3.5 text-emerald-500" />
           <IconCircleX v-else-if="cookieYtStatus === 'fail'" class="w-3.5 h-3.5 text-amber-400" />
+          <span v-else class="text-[10px] font-bold text-slate-400">YT</span>
         </div>
-        <div class="absolute top-full right-0 mt-2 w-max max-w-[260px] px-3 py-2.5 bg-slate-800 rounded-xl shadow-xl opacity-0 group-hover/ytcookie:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
+        <div class="absolute top-full right-0 mt-2 w-max max-w-[260px] px-3 py-2.5 bg-slate-800 rounded-xl shadow-xl opacity-0 group-hover/cookie-yt:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
           <p class="text-xs font-medium text-white leading-snug">{{ cookieYtTooltip[0] }}</p>
           <p v-if="cookieYtTooltip[1]" class="text-[11px] text-slate-400 mt-1 leading-snug">{{ cookieYtTooltip[1] }}</p>
           <div class="absolute bottom-full right-2.5 border-[5px] border-transparent border-b-slate-800" />
@@ -814,7 +815,7 @@ onMounted(() => {
         <div v-if="!videoId" class="text-center pointer-events-none">
           <IconVideo class="w-16 h-16 mx-auto mb-3 text-slate-300" />
           <p class="text-sm font-medium text-slate-400">输入 B 站 / YouTube 链接，一键解析</p>
-          <p class="text-xs text-slate-300 mt-1">支持 BV 号 / YouTube 视频链接</p>
+          <p class="text-xs text-slate-300 mt-1">支持 B 站 BV 号 · YouTube 视频链接</p>
         </div>
 
         <!-- 遮罩：全屏激活前隐藏初始加载页面 -->
