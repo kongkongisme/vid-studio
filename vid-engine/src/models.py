@@ -46,3 +46,4 @@ class VideoMeta:
     title: str
     duration: int  # 秒
     uploader: str
+    language: str = ''  # yt-dlp 返回的视频主语言代码，如 "en"、"zh"
