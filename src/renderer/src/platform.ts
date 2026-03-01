@@ -47,9 +47,17 @@ export function getWebviewSession(platform: Platform): string {
 
 // ─── 注入脚本 ─────────────────────────────────────────────
 
-/** B 站网页全屏按钮注入脚本；YouTube watch 页直接显示，不注入（避免触发 OS 全屏） */
+/** 网页全屏/影院模式脚本：B 站点击网页全屏按钮；YouTube 点击影院模式按钮 */
 export function getFullscreenScript(platform: Platform): string {
-  if (platform === 'youtube') return '(function(){ return true; })()'
+  if (platform === 'youtube') {
+    return `(function() {
+      var wf = document.querySelector('ytd-watch-flexy');
+      if (wf && wf.hasAttribute('theater')) return true;
+      var btn = document.querySelector('.ytp-size-button');
+      if (btn) { btn.click(); return true; }
+      return false;
+    })()`
+  }
   return `
     (function() {
       var selectors = [

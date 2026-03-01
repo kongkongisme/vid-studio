@@ -140,7 +140,10 @@ class VideoDownloader:
         opts = {
             **self._base_opts(),
             "quiet": False,
-            "format": "bestaudio/best",
+            # YouTube DASH 纯音频格式（opus/m4a）会被 403 拒绝，
+            # 优先使用格式 18（360p mp4，单文件合并传统格式），
+            # 再依次回退到最低画质 mp4 / 纯音频 / 任意最佳。
+            "format": "18/worst[ext=mp4]/bestaudio/best",
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",

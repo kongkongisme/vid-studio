@@ -29,8 +29,6 @@ import {
   IconChevronUp,
   IconBolt,
   IconEye,
-  IconCircleCheck,
-  IconCircleX,
   IconSquare,
   IconMessage,
   IconCornerDownRight,
@@ -138,27 +136,6 @@ const cookieCombinedStatus = computed(() => {
   return 'idle'
 })
 
-const cookieCombinedTooltip = computed((): [string, string] => {
-  if (cookieCombinedStatus.value === 'loading') return ['正在同步浏览器账号...', '']
-  const biliOk = cookieStatus.value === 'ok'
-  const ytOk = cookieYtStatus.value === 'ok'
-  if (biliOk && ytOk)
-    return [
-      `B站（${cookieBrowser.value}）· YouTube（${cookieYtBrowser.value}）已登录`,
-      '视频将以账号权限播放，无需手动登录'
-    ]
-  if (biliOk)
-    return [
-      `B站（${cookieBrowser.value}）账号已同步`,
-      '未检测到 YouTube 账号，请先在浏览器中登录 YouTube'
-    ]
-  if (ytOk)
-    return [
-      `YouTube（${cookieYtBrowser.value}）账号已同步`,
-      '未检测到 B 站账号，请先在浏览器中登录 B 站'
-    ]
-  return ['未检测到浏览器账号', '请先在 Edge / Chrome / Firefox 中登录 B 站或 YouTube']
-})
 
 // ─── 工具函数 ─────────────────────────────────────────────
 
@@ -289,13 +266,7 @@ function injectWebFullscreen(wv: any): void {
     }
   }
 
-  // YouTube watch 页直接标记可见，不注入全屏脚本（避免触发 OS 全屏）
-  if (currentPlatform.value === 'youtube') {
-    showAndPlay()
-    return
-  }
-
-  // B 站：重试点击网页全屏按钮
+  // 两平台统一：重试点击全屏/影院模式按钮
   const script = getFullscreenScript(currentPlatform.value)
   let retries = 0
   const attempt = (): void => {
@@ -656,12 +627,17 @@ function onWebviewDomReady(): void {
 
 // ─── 自动导入浏览器 Cookie ────────────────────────────────
 
+function getBrowserDisplayName(browser: string): string {
+  const map: Record<string, string> = { edge: 'Edge', chrome: 'Chrome', firefox: 'Firefox', safari: 'Safari' }
+  return map[browser] ?? browser
+}
+
 async function importBrowserCookies(): Promise<void> {
   cookieStatus.value = 'loading'
   const result = await window.api.importBrowserCookies()
   if (result.success && result.browser) {
     cookieStatus.value = 'ok'
-    cookieBrowser.value = result.browser === 'edge' ? 'Edge' : 'Chrome'
+    cookieBrowser.value = getBrowserDisplayName(result.browser)
   } else {
     cookieStatus.value = 'fail'
   }
@@ -672,7 +648,7 @@ async function importYoutubeCookies(): Promise<void> {
   const result = await window.api.importYoutubeCookies()
   if (result.success && result.browser) {
     cookieYtStatus.value = 'ok'
-    cookieYtBrowser.value = result.browser === 'edge' ? 'Edge' : 'Chrome'
+    cookieYtBrowser.value = getBrowserDisplayName(result.browser)
   } else {
     cookieYtStatus.value = 'fail'
   }
@@ -741,13 +717,45 @@ onMounted(() => {
       <!-- 浏览器账号状态（B站 + YouTube 合并） -->
       <div class="relative group/cookie shrink-0">
         <div class="w-7 h-7 flex items-center justify-center rounded-md bg-slate-50 border border-slate-200 cursor-default transition-colors group-hover/cookie:bg-slate-100">
+          <!-- 加载中：统一转圈 -->
           <IconLoader2 v-if="cookieCombinedStatus === 'loading'" class="w-3.5 h-3.5 text-slate-400 animate-spin" />
-          <IconCircleCheck v-else-if="cookieCombinedStatus === 'ok'" class="w-3.5 h-3.5 text-emerald-500" />
-          <IconCircleX v-else-if="cookieCombinedStatus === 'warn'" class="w-3.5 h-3.5 text-amber-400" />
+          <!-- 加载完成：B站 和 YouTube 各一个状态点 -->
+          <div v-else class="flex flex-col gap-[3px]">
+            <div class="flex items-center gap-[3px]">
+              <span class="text-[6px] font-bold text-slate-400 leading-none w-[7px]">B</span>
+              <div
+                class="w-[6px] h-[6px] rounded-full"
+                :class="cookieStatus === 'ok' ? 'bg-emerald-500' : cookieStatus === 'fail' ? 'bg-amber-400' : 'bg-slate-300'"
+              />
+            </div>
+            <div class="flex items-center gap-[3px]">
+              <span class="text-[6px] font-bold text-slate-400 leading-none w-[7px]">Y</span>
+              <div
+                class="w-[6px] h-[6px] rounded-full"
+                :class="cookieYtStatus === 'ok' ? 'bg-emerald-500' : cookieYtStatus === 'fail' ? 'bg-amber-400' : 'bg-slate-300'"
+              />
+            </div>
+          </div>
         </div>
-        <div class="absolute top-full right-0 mt-2 w-max max-w-[280px] px-3 py-2.5 bg-slate-800 rounded-xl shadow-xl opacity-0 group-hover/cookie:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
-          <p class="text-xs font-medium text-white leading-snug">{{ cookieCombinedTooltip[0] }}</p>
-          <p v-if="cookieCombinedTooltip[1]" class="text-[11px] text-slate-400 mt-1 leading-snug">{{ cookieCombinedTooltip[1] }}</p>
+        <div class="absolute top-full right-0 mt-2 w-max max-w-[300px] px-3 py-2.5 bg-slate-800 rounded-xl shadow-xl opacity-0 group-hover/cookie:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
+          <p class="text-xs font-medium text-white leading-snug mb-1.5">浏览器账号</p>
+          <div class="flex flex-col gap-1">
+            <div class="flex items-center gap-1.5">
+              <div class="w-1.5 h-1.5 rounded-full flex-shrink-0" :class="cookieStatus === 'ok' ? 'bg-emerald-500' : cookieStatus === 'fail' ? 'bg-amber-400' : 'bg-slate-500'" />
+              <span class="text-[11px] leading-snug" :class="cookieStatus === 'ok' ? 'text-slate-200' : 'text-slate-400'">
+                B站：{{ cookieStatus === 'ok' ? `已登录（${cookieBrowser}）` : cookieStatus === 'fail' ? '未检测到账号' : '检测中...' }}
+              </span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <div class="w-1.5 h-1.5 rounded-full flex-shrink-0" :class="cookieYtStatus === 'ok' ? 'bg-emerald-500' : cookieYtStatus === 'fail' ? 'bg-amber-400' : 'bg-slate-500'" />
+              <span class="text-[11px] leading-snug" :class="cookieYtStatus === 'ok' ? 'text-slate-200' : 'text-slate-400'">
+                YouTube：{{ cookieYtStatus === 'ok' ? `已登录（${cookieYtBrowser}）` : cookieYtStatus === 'fail' ? '未检测到账号' : '检测中...' }}
+              </span>
+            </div>
+          </div>
+          <p v-if="cookieStatus === 'fail' || cookieYtStatus === 'fail'" class="text-[10px] text-slate-500 mt-1.5 leading-snug">
+            请先在 Edge / Chrome / Firefox / Safari 中登录
+          </p>
           <div class="absolute bottom-full right-2.5 border-[5px] border-transparent border-b-slate-800" />
         </div>
       </div>

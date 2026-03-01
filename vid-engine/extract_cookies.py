@@ -8,18 +8,26 @@ import json
 import tempfile
 import os
 import subprocess
-from http.cookiejar import MozillaCookieJar
+from http.cookiejar import MozillaCookieJar  # CLI fallback 仍需要
 
 # 各站点对应的域名关键词
 SITE_DOMAINS = {
     'bilibili': ('bilibili', 'bilivideo', 'hdslb', 'biliimg'),
-    'youtube': ('youtube', 'ytimg', 'googlevideo', 'yt'),
+    # YouTube 登录依赖 Google SSO，必须同时导入 google.com 的认证 Cookie
+    'youtube': ('youtube', 'ytimg', 'googlevideo', 'yt', 'google'),
 }
 
-# 各站点用于触发 Cookie 写入的种子 URL
+# 各站点用于触发 Cookie 写入的种子 URL（CLI fallback 使用）
 SITE_SEED_URLS = {
     'bilibili': 'https://www.bilibili.com/',
     'youtube': 'https://www.youtube.com/',
+}
+
+# 判断是否已登录的关键 Cookie（必须包含其中至少一个才算"已登录"）
+# 避免把仅有浏览偏好 Cookie 的浏览器误判为已登录
+LOGIN_INDICATORS = {
+    'bilibili': {'SESSDATA', 'DedeUserID'},
+    'youtube': {'SID', 'SAPISID'},  # Google SSO 登录态 Cookie，在 .google.com 域下
 }
 
 
@@ -41,25 +49,10 @@ def _cookie_to_dict(c) -> dict:
 
 
 def extract_via_api(browser: str, site: str) -> list:
-    """优先使用 yt-dlp Python API 直接提取，速度快。"""
-    import yt_dlp
-
-    # 使用 mkstemp 替代 mktemp，避免 TOCTOU 竞态条件安全漏洞
-    fd, tmp = tempfile.mkstemp(suffix='.txt')
-    os.close(fd)
-    opts = {
-        'cookiesfrombrowser': (browser, None, None, None),
-        'cookiefile': tmp,
-        'quiet': True,
-        'no_warnings': True,
-    }
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            cookies = [_cookie_to_dict(c) for c in ydl.cookiejar if _is_target_site(c.domain, site)]
-        return cookies
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
+    """直接调用 yt-dlp 内部 API 提取浏览器 cookies，无需中间文件。"""
+    from yt_dlp.cookies import extract_cookies_from_browser
+    jar = extract_cookies_from_browser(browser)
+    return [_cookie_to_dict(c) for c in jar if _is_target_site(c.domain, site)]
 
 
 def extract_via_cli(browser: str, site: str) -> list:
@@ -99,21 +92,32 @@ def main():
     parser.add_argument('--site', choices=['bilibili', 'youtube'], default='bilibili', help='目标站点（默认 bilibili）')
     args = parser.parse_args()
 
-    browsers = [args.browser] if args.browser else ['chrome', 'edge', 'firefox']
+    # macOS 优先尝试 Safari，Windows/Linux 不支持 Safari
+    default_browsers = ['chrome', 'edge', 'firefox']
+    if sys.platform == 'darwin':
+        default_browsers.append('safari')
+    browsers = [args.browser] if args.browser else default_browsers
     site = args.site
+
+    indicators = LOGIN_INDICATORS.get(site, set())
 
     for browser in browsers:
         for extractor in (extract_via_api, extract_via_cli):
             try:
                 cookies = extractor(browser, site)
-                if cookies:
-                    print(json.dumps({
-                        'success': True,
-                        'browser': browser,
-                        'count': len(cookies),
-                        'cookies': cookies,
-                    }))
-                    return
+                if not cookies:
+                    continue
+                # 必须包含登录态 Cookie，否则只是访客 Cookie，跳过继续尝试
+                names = {c['name'] for c in cookies}
+                if indicators and not (names & indicators):
+                    continue
+                print(json.dumps({
+                    'success': True,
+                    'browser': browser,
+                    'count': len(cookies),
+                    'cookies': cookies,
+                }))
+                return
             except Exception:
                 continue
 
