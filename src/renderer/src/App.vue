@@ -276,13 +276,7 @@ function injectWebFullscreen(wv: any): void {
     }
   }
 
-  // YouTube embed 立即填满 webview，直接标记可见
-  if (currentPlatform.value === 'youtube') {
-    showAndPlay()
-    return
-  }
-
-  // B 站：重试点击网页全屏按钮
+  // 重试点击全屏按钮（B 站 / YouTube watch 页均需注入）
   const script = getFullscreenScript(currentPlatform.value)
   let retries = 0
   const attempt = (): void => {

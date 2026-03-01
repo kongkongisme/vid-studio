@@ -38,7 +38,7 @@ export function validateUrl(url: string): string | null {
 
 export function getWebviewUrl(videoId: string, platform: Platform): string {
   if (platform === 'bilibili') return `https://www.bilibili.com/video/${videoId}`
-  return `https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0`
+  return `https://www.youtube.com/watch?v=${videoId}`
 }
 
 export function getWebviewSession(platform: Platform): string {
@@ -47,9 +47,17 @@ export function getWebviewSession(platform: Platform): string {
 
 // ─── 注入脚本 ─────────────────────────────────────────────
 
-/** B 站网页全屏按钮注入脚本；YouTube embed 填满 webview，直接返回 true */
+/** 两平台全屏按钮注入脚本 */
 export function getFullscreenScript(platform: Platform): string {
-  if (platform === 'youtube') return '(function(){ return true; })()'
+  if (platform === 'youtube') {
+    return `
+      (function() {
+        var btn = document.querySelector('.ytp-fullscreen-button');
+        if (btn) { btn.click(); return true; }
+        return false;
+      })()
+    `
+  }
   return `
     (function() {
       var selectors = [
@@ -80,5 +88,5 @@ export function getSeekScript(seconds: number): string {
 /** 时间跳转降级 URL（无法通过 JS 跳转时重新加载） */
 export function getSeekFallbackUrl(videoId: string, platform: Platform, seconds: number): string {
   if (platform === 'bilibili') return `https://www.bilibili.com/video/${videoId}?t=${seconds}`
-  return `https://www.youtube.com/embed/${videoId}?autoplay=1&start=${seconds}`
+  return `https://www.youtube.com/watch?v=${videoId}&t=${seconds}`
 }
