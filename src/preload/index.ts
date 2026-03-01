@@ -22,6 +22,10 @@ const api = {
   importBrowserCookies: (): Promise<CookieImportResult> =>
     ipcRenderer.invoke('import-browser-cookies'),
 
+  // 从 Edge/Chrome 导入 YouTube cookies
+  importYoutubeCookies: (): Promise<CookieImportResult> =>
+    ipcRenderer.invoke('import-youtube-cookies'),
+
   // 停止正在进行的解析
   stopParse: (): Promise<void> => ipcRenderer.invoke('stop-parse'),
 
