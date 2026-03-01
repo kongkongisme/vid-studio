@@ -1,4 +1,5 @@
 import { app, shell, BrowserWindow, ipcMain, session } from 'electron'
+import { getHistory, addHistory, toggleFavorite, deleteHistory } from './history'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { spawn, execSync, type ChildProcess } from 'child_process'
@@ -296,6 +297,48 @@ ipcMain.handle('chat-with-video', async (event, messages: ApiChatMessage[]) => {
     return { success: true }
   } catch (e) {
     return { success: false, error: String(e) }
+  }
+})
+
+// ─── IPC：历史管理 ────────────────────────────────────────
+
+ipcMain.handle('get-history', async () => {
+  try {
+    return await getHistory()
+  } catch {
+    return []
+  }
+})
+
+ipcMain.handle('add-history', async (_, item) => {
+  try {
+    await addHistory(item)
+  } catch {
+    // 静默失败
+  }
+})
+
+ipcMain.handle('toggle-favorite', async (_, id) => {
+  try {
+    await toggleFavorite(id)
+  } catch {
+    // 静默失败
+  }
+})
+
+ipcMain.handle('delete-history', async (_, id) => {
+  try {
+    await deleteHistory(id)
+  } catch {
+    // 静默失败
+  }
+})
+
+ipcMain.handle('read-file', async (_, filePath: string) => {
+  try {
+    return await readFile(filePath, 'utf-8')
+  } catch {
+    return null
   }
 })
 

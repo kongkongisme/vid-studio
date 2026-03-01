@@ -17,6 +17,19 @@ interface CookieImportResult {
   error?: string
 }
 
+interface HistoryItem {
+  id: string
+  url: string
+  title: string
+  platform: 'bilibili' | 'youtube'
+  thumbnail?: string
+  mode: 'asr' | 'visual'
+  createdAt: number
+  favorited: boolean
+  outputPath?: string
+  duration?: number
+}
+
 const api = {
   // 启动时从 Edge/Chrome 导入 B 站 cookies
   importBrowserCookies: (): Promise<CookieImportResult> =>
@@ -54,7 +67,19 @@ const api = {
     const handler = (_: Electron.IpcRendererEvent, delta: string): void => callback(delta)
     ipcRenderer.on('chat-stream-chunk', handler)
     return () => ipcRenderer.removeListener('chat-stream-chunk', handler)
-  }
+  },
+
+  // 历史管理
+  getHistory: (): Promise<HistoryItem[]> => ipcRenderer.invoke('get-history'),
+
+  addHistory: (item: Omit<HistoryItem, 'id' | 'createdAt'>): Promise<void> =>
+    ipcRenderer.invoke('add-history', item),
+
+  toggleFavorite: (id: string): Promise<void> => ipcRenderer.invoke('toggle-favorite', id),
+
+  deleteHistory: (id: string): Promise<void> => ipcRenderer.invoke('delete-history', id),
+
+  readFile: (path: string): Promise<string | null> => ipcRenderer.invoke('read-file', path)
 }
 
 if (process.contextIsolated) {

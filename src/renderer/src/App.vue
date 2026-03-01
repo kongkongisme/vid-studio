@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted, computed } from 'vue'
+import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue'
 import {
   type Platform,
   detectPlatform,
@@ -36,7 +36,9 @@ import {
   IconSend,
   IconX,
   IconSparkles,
-  IconClipboard
+  IconClipboard,
+  IconHistory,
+  IconStar
 } from '@tabler/icons-vue'
 
 // ─── 类型定义 ─────────────────────────────────────────────
@@ -86,6 +88,37 @@ const expandedIds = ref<string[]>([])
 const expandedCardIds = ref<string[]>([])
 const videoLoaded = ref(false)
 const skipVideo = ref(true)
+
+// ─── Phase 1: 智能 URL 检测 ────────────────────────────────
+
+const clipboardDetectedUrl = ref('')
+const showClipboardToast = ref(false)
+let clipboardCheckTimer: number | null = null
+let clipboardToastTimer: number | null = null
+
+// ─── Phase 2: 历史管理 ────────────────────────────────────
+
+interface HistoryItem {
+  id: string
+  url: string
+  title: string
+  platform: 'bilibili' | 'youtube'
+  thumbnail?: string
+  mode: 'asr' | 'visual'
+  createdAt: number
+  favorited: boolean
+  outputPath?: string
+  duration?: number
+}
+
+const historyList = ref<HistoryItem[]>([])
+const showHistoryPanel = ref(false)
+const historySearch = ref('')
+
+// ─── Phase 3: 时间轴搜索 ───────────────────────────────────
+
+const searchQuery = ref('')
+const searchInputRef = ref<HTMLInputElement | null>(null)
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const webviewRef = ref<any>(null)
@@ -545,6 +578,8 @@ async function parseVideo(): Promise<void> {
     const result = await window.api.parseVideo(videoUrl.value, { skipVideo: skipVideo.value })
     if (result.success && result.output) {
       timelineChunks.value = parseMarkdown(result.output)
+      // 保存到历史记录
+      await saveHistory(result.output)
     } else {
       errorMsg.value = result.error ?? '解析失败，请检查网络或 API Key 配置'
     }
@@ -625,6 +660,150 @@ function onWebviewDomReady(): void {
   `)
 }
 
+// ─── 历史管理 ──────────────────────────────────────────────
+
+async function loadHistory(): Promise<void> {
+  try {
+    historyList.value = await window.api.getHistory()
+  } catch {
+    // 静默失败
+  }
+}
+
+async function saveHistory(_output: string): Promise<void> {
+  if (!currentPlatform.value || !videoId.value) return
+
+  const title = timelineChunks.value[0]?.title || '未命名视频'
+  try {
+    await window.api.addHistory({
+      url: url.value,
+      title,
+      platform: currentPlatform.value,
+      mode: skipVideo.value ? 'asr' : 'visual',
+      favorited: false
+    })
+    await loadHistory()
+  } catch {
+    // 静默失败
+  }
+}
+
+async function toggleFavoriteHistory(id: string): Promise<void> {
+  try {
+    await window.api.toggleFavorite(id)
+    await loadHistory()
+  } catch {
+    // 静默失败
+  }
+}
+
+async function deleteHistoryItem(id: string): Promise<void> {
+  try {
+    await window.api.deleteHistory(id)
+    await loadHistory()
+  } catch {
+    // 静默失败
+  }
+}
+
+async function loadHistoryItem(item: HistoryItem): Promise<void> {
+  url.value = item.url
+  skipVideo.value = item.mode === 'asr'
+  showHistoryPanel.value = false
+
+  // 尝试加载已保存的输出文件
+  if (item.outputPath) {
+    try {
+      const output = await window.api.readFile(item.outputPath)
+      if (output) {
+        timelineChunks.value = parseMarkdown(output)
+        // 设置平台
+        currentPlatform.value = item.platform
+        videoId.value = extractVideoId(item.url, item.platform) || ''
+        videoUrl.value = getWebviewUrl(videoId.value, item.platform)
+        return
+      }
+    } catch {
+      // 文件读取失败，重新解析
+    }
+  }
+
+  // 没有缓存或读取失败，重新解析
+  await parseVideo()
+}
+
+const filteredHistory = computed(() => {
+  if (!historySearch.value.trim()) {
+    return historyList.value
+  }
+  const query = historySearch.value.toLowerCase()
+  return historyList.value.filter(
+    (h) => h.title.toLowerCase().includes(query) || h.url.toLowerCase().includes(query)
+  )
+})
+
+function formatTime(timestamp: number): string {
+  const date = new Date(timestamp)
+  const now = new Date()
+  const diffDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24))
+
+  if (diffDays === 0) {
+    return `今天 ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`
+  }
+  if (diffDays === 1) return '昨天'
+  if (diffDays < 7) return `${diffDays} 天前`
+  return `${date.getMonth() + 1}/${date.getDate()}`
+}
+
+function getPlatformIcon(platform: string): string {
+  return platform === 'bilibili'
+    ? 'https://www.bilibili.com/favicon.ico'
+    : 'https://www.youtube.com/s/desktop/28b67e7f/img/favicon.ico'
+}
+
+// ─── 时间轴搜索 ────────────────────────────────────────────
+
+const filteredChunks = computed(() => {
+  if (!searchQuery.value.trim()) {
+    return timelineChunks.value
+  }
+
+  const query = searchQuery.value.toLowerCase()
+
+  return timelineChunks.value
+    .filter((chunk) => {
+      if (chunk.title.toLowerCase().includes(query)) return true
+      if (chunk.summary.toLowerCase().includes(query)) return true
+      if (chunk.keyPoints.some((kp) => kp.toLowerCase().includes(query))) return true
+      if (chunk.transcript.some((t) => t.text.toLowerCase().includes(query))) return true
+      if (chunk.tags.some((t) => t.toLowerCase().includes(query))) return true
+      return false
+    })
+    .sort((a, b) => {
+      // 按匹配度排序：标题 > 标签 > 核心观点 > 总结 > 原文
+      const scoreA = calculateMatchScore(a, query)
+      const scoreB = calculateMatchScore(b, query)
+      return scoreB - scoreA
+    })
+})
+
+function calculateMatchScore(chunk: TimelineChunk, query: string): number {
+  let score = 0
+  if (chunk.title.toLowerCase().includes(query)) score += 10
+  if (chunk.tags.some((t) => t.toLowerCase().includes(query))) score += 8
+  if (chunk.keyPoints.some((kp) => kp.toLowerCase().includes(query))) score += 5
+  if (chunk.summary.toLowerCase().includes(query)) score += 3
+  score += chunk.transcript.filter((t) => t.text.toLowerCase().includes(query)).length * 0.5
+  return score
+}
+
+function highlightText(text: string, query: string): string {
+  if (!query.trim()) return text
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const regex = new RegExp(`(${escaped})`, 'gi')
+  return text.replace(regex, '<mark class="bg-yellow-200 rounded px-0.5">$1</mark>')
+}
+
 // ─── 自动导入浏览器 Cookie ────────────────────────────────
 
 function getBrowserDisplayName(browser: string): string {
@@ -655,9 +834,120 @@ async function importYoutubeCookies(): Promise<void> {
 }
 
 onMounted(() => {
+  // 读取用户偏好
+  const savedMode = localStorage.getItem('preferredParseMode')
+  if (savedMode === 'visual') {
+    skipVideo.value = false
+  }
+
+  // 启动剪贴板检测
+  checkClipboard()
+  clipboardCheckTimer = window.setInterval(checkClipboard, 1000)
+
+  // 加载历史记录
+  loadHistory()
+
+  // 绑定拖拽事件
+  window.addEventListener('dragover', handleDragOver)
+  window.addEventListener('drop', handleDrop)
+
+  // 绑定快捷键
+  window.addEventListener('keydown', handleGlobalKeydown)
+
   importBrowserCookies()
   importYoutubeCookies()
 })
+
+onUnmounted(() => {
+  if (clipboardCheckTimer) {
+    clearInterval(clipboardCheckTimer)
+  }
+  if (clipboardToastTimer) {
+    clearTimeout(clipboardToastTimer)
+  }
+  window.removeEventListener('dragover', handleDragOver)
+  window.removeEventListener('drop', handleDrop)
+  window.removeEventListener('keydown', handleGlobalKeydown)
+})
+
+// ─── 偏好记忆持久化 ────────────────────────────────────────
+
+watch(skipVideo, (newVal) => {
+  localStorage.setItem('preferredParseMode', newVal ? 'asr' : 'visual')
+})
+
+// ─── 智能 URL 检测 ─────────────────────────────────────────
+
+async function checkClipboard(): Promise<void> {
+  if (loading.value || showClipboardToast.value) return
+
+  try {
+    const text = await navigator.clipboard.readText()
+    const trimmed = text.trim()
+
+    // 已输入或已显示的链接不再提示
+    if (trimmed === url.value || trimmed === clipboardDetectedUrl.value) return
+
+    // 验证是否为有效视频链接
+    if (validateUrl(trimmed)) {
+      clipboardDetectedUrl.value = trimmed
+      showClipboardToast.value = true
+
+      // 5 秒后自动隐藏
+      if (clipboardToastTimer) clearTimeout(clipboardToastTimer)
+      clipboardToastTimer = window.setTimeout(() => {
+        if (clipboardDetectedUrl.value === trimmed) {
+          showClipboardToast.value = false
+        }
+      }, 5000)
+    }
+  } catch {
+    // 剪贴板权限被拒绝，静默忽略
+  }
+}
+
+async function acceptClipboardUrl(): Promise<void> {
+  url.value = clipboardDetectedUrl.value
+  showClipboardToast.value = false
+  await parseVideo()
+}
+
+// ─── 拖拽支持 ──────────────────────────────────────────────
+
+function handleDragOver(e: DragEvent): void {
+  e.preventDefault()
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = 'copy'
+  }
+}
+
+async function handleDrop(e: DragEvent): Promise<void> {
+  e.preventDefault()
+  const text = e.dataTransfer?.getData('text')
+  if (text) {
+    const trimmed = text.trim()
+    if (!validateUrl(trimmed)) {
+      errorMsg.value = '拖拽的内容不是有效的视频链接'
+      return
+    }
+    url.value = trimmed
+    await parseVideo()
+  }
+}
+
+// ─── 全局快捷键 ────────────────────────────────────────────
+
+function handleGlobalKeydown(e: KeyboardEvent): void {
+  // / 键聚焦搜索（不在输入框时）
+  if (e.key === '/' && !['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
+    e.preventDefault()
+    searchInputRef.value?.focus()
+  }
+  // ESC 清除搜索
+  if (e.key === 'Escape' && searchQuery.value) {
+    searchQuery.value = ''
+  }
+}
 </script>
 
 <template>
@@ -757,6 +1047,87 @@ onMounted(() => {
             请先在 Edge / Chrome / Firefox / Safari 中登录
           </p>
           <div class="absolute bottom-full right-2.5 border-[5px] border-transparent border-b-slate-800" />
+        </div>
+      </div>
+
+      <!-- 历史记录按钮 -->
+      <div class="relative shrink-0">
+        <button
+          @click="showHistoryPanel = !showHistoryPanel"
+          class="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition-colors"
+          :class="showHistoryPanel ? 'text-blue-500 bg-blue-50 border-blue-200' : ''"
+          title="解析历史"
+        >
+          <IconHistory class="w-4 h-4" />
+        </button>
+
+        <!-- 历史下拉面板 -->
+        <div
+          v-if="showHistoryPanel"
+          class="absolute top-full right-0 mt-2 w-80 max-h-96 bg-white rounded-xl shadow-xl border border-slate-200 z-50 overflow-hidden flex flex-col"
+        >
+          <!-- 搜索框 -->
+          <div class="p-2 border-b border-slate-100">
+            <div class="relative">
+              <IconSearch class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+              <input
+                v-model="historySearch"
+                placeholder="搜索历史..."
+                class="w-full pl-8 pr-3 py-1.5 bg-slate-50 rounded-lg text-sm outline-none focus:bg-slate-100"
+              />
+            </div>
+          </div>
+
+          <!-- 历史列表 -->
+          <div class="flex-1 overflow-y-auto p-1">
+            <div
+              v-for="item in filteredHistory"
+              :key="item.id"
+              @click="loadHistoryItem(item)"
+              class="flex items-center gap-2 p-2 rounded-lg hover:bg-slate-50 cursor-pointer group"
+            >
+              <!-- 平台图标 -->
+              <img
+                :src="getPlatformIcon(item.platform)"
+                class="w-5 h-5 rounded"
+                @error="(e) => { const t = e.target as HTMLImageElement; if (t) t.style.display='none' }"
+              />
+
+              <!-- 信息 -->
+              <div class="flex-1 min-w-0">
+                <p class="text-sm text-slate-800 truncate">{{ item.title }}</p>
+                <div class="flex items-center gap-1.5 text-xs text-slate-400">
+                  <span>{{ formatTime(item.createdAt) }}</span>
+                  <span class="text-slate-200">·</span>
+                  <span :class="item.mode === 'asr' ? 'text-blue-400' : 'text-amber-400'">
+                    {{ item.mode === 'asr' ? 'ASR' : '视觉' }}
+                  </span>
+                </div>
+              </div>
+
+              <!-- 操作按钮 -->
+              <button
+                @click.stop="toggleFavoriteHistory(item.id)"
+                class="opacity-0 group-hover:opacity-100 p-1 transition-opacity"
+              >
+                <IconStar
+                  :class="item.favorited ? 'text-amber-400 fill-current' : 'text-slate-300'"
+                  class="w-4 h-4"
+                />
+              </button>
+              <button
+                @click.stop="deleteHistoryItem(item.id)"
+                class="opacity-0 group-hover:opacity-100 p-1 text-slate-300 hover:text-red-400 transition-opacity"
+              >
+                <IconTrash class="w-4 h-4" />
+              </button>
+            </div>
+
+            <!-- 空状态 -->
+            <div v-if="filteredHistory.length === 0" class="p-4 text-center">
+              <p class="text-sm text-slate-400">暂无历史记录</p>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -935,11 +1306,37 @@ onMounted(() => {
             </div>
           </div>
 
+          <!-- 搜索框 -->
+          <div
+            v-if="timelineChunks.length"
+            class="shrink-0 px-3 py-2 border-b border-slate-200 bg-white"
+          >
+            <div class="relative">
+              <IconSearch class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+              <input
+                ref="searchInputRef"
+                v-model="searchQuery"
+                placeholder="搜索时间轴（/ 快捷键）..."
+                class="w-full pl-8 pr-7 py-1.5 bg-slate-50 rounded-lg text-sm outline-none focus:bg-slate-100 transition-colors"
+              />
+              <button
+                v-if="searchQuery"
+                @click="searchQuery = ''"
+                class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                <IconX class="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div v-if="searchQuery" class="mt-1.5 text-xs text-slate-400">
+              找到 {{ filteredChunks.length }} 个结果
+            </div>
+          </div>
+
           <!-- 时间轴列表 -->
           <div v-else class="flex-1 overflow-y-auto">
             <div class="px-3 py-3 space-y-2">
               <div
-                v-for="chunk in timelineChunks"
+                v-for="chunk in filteredChunks"
                 :key="chunk.id"
                 class="rounded-xl border overflow-hidden bg-white transition-all"
                 :class="
@@ -974,14 +1371,16 @@ onMounted(() => {
                       isCardExpanded(chunk.id) ? '' : 'line-clamp-2'
                     ]"
                     @click="onChunkClick(chunk)"
-                  >{{ chunk.title }}</h3>
+                    v-html="highlightText(chunk.title, searchQuery)"
+                  />
 
                   <!-- 一句话总结 -->
                   <p
                     v-if="chunk.summary"
                     class="text-xs text-slate-500 mb-2 leading-relaxed"
                     :class="isCardExpanded(chunk.id) ? '' : 'line-clamp-2'"
-                  >{{ chunk.summary }}</p>
+                    v-html="highlightText(chunk.summary, searchQuery)"
+                  />
 
                   <!-- 核心观点 -->
                   <ul v-if="chunk.keyPoints.length" class="space-y-1 mb-2">
@@ -991,7 +1390,11 @@ onMounted(() => {
                       class="flex items-start gap-1.5 text-xs text-slate-500"
                     >
                       <span class="text-blue-400 mt-0.5 shrink-0 leading-none">·</span>
-                      <span class="leading-snug" :class="isCardExpanded(chunk.id) ? '' : 'line-clamp-1'">{{ pt }}</span>
+                      <span
+                        class="leading-snug"
+                        :class="isCardExpanded(chunk.id) ? '' : 'line-clamp-1'"
+                        v-html="highlightText(pt, searchQuery)"
+                      />
                     </li>
                   </ul>
 
@@ -1001,7 +1404,8 @@ onMounted(() => {
                       v-for="tag in chunk.tags.slice(0, 4)"
                       :key="tag"
                       class="text-[10px] px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-400 border border-slate-200"
-                    >{{ tag }}</span>
+                      v-html="highlightText(tag, searchQuery)"
+                    />
                   </div>
 
                   <!-- 底部操作行：展开 + 引用 -->
@@ -1214,6 +1618,37 @@ onMounted(() => {
 
       </aside>
     </main>
+
+    <!-- 剪贴板检测 Toast -->
+    <Transition
+      enter-from-class="opacity-0 translate-x-4"
+      enter-active-class="transition duration-300"
+      leave-to-class="opacity-0 translate-x-4"
+      leave-active-class="transition duration-200"
+    >
+      <div
+        v-if="showClipboardToast"
+        class="fixed top-4 right-4 z-50 flex items-center gap-3 px-4 py-3 bg-slate-800 text-white rounded-lg shadow-xl"
+      >
+        <IconClipboard class="w-4 h-4 text-blue-400" />
+        <div class="flex flex-col">
+          <span class="text-sm font-medium">检测到视频链接</span>
+          <span class="text-xs text-slate-400 truncate max-w-[200px]">{{ clipboardDetectedUrl }}</span>
+        </div>
+        <button
+          @click="acceptClipboardUrl"
+          class="ml-2 px-3 py-1.5 bg-blue-500 hover:bg-blue-600 rounded text-xs font-medium transition-colors"
+        >
+          立即解析
+        </button>
+        <button
+          @click="showClipboardToast = false"
+          class="p-1 text-slate-400 hover:text-white transition-colors"
+        >
+          <IconX class="w-4 h-4" />
+        </button>
+      </div>
+    </Transition>
   </div>
 </template>
 

@@ -2,6 +2,19 @@
 
 declare const __APP_VERSION__: string
 
+interface HistoryItem {
+  id: string
+  url: string
+  title: string
+  platform: 'bilibili' | 'youtube'
+  thumbnail?: string
+  mode: 'asr' | 'visual'
+  createdAt: number
+  favorited: boolean
+  outputPath?: string
+  duration?: number
+}
+
 interface Window {
   api: {
     stopParse: () => Promise<void>
@@ -26,5 +39,11 @@ interface Window {
       messages: { role: string; content: string }[]
     ) => Promise<{ success: boolean; error?: string }>
     onChatStreamChunk: (callback: (delta: string) => void) => () => void
+    // 历史管理
+    getHistory: () => Promise<HistoryItem[]>
+    addHistory: (item: Omit<HistoryItem, 'id' | 'createdAt'>) => Promise<void>
+    toggleFavorite: (id: string) => Promise<void>
+    deleteHistory: (id: string) => Promise<void>
+    readFile: (path: string) => Promise<string | null>
   }
 }
