@@ -16,10 +16,12 @@ export function extractVideoId(url: string, platform: Platform): string | null {
     const m = url.match(/BV[a-zA-Z0-9]+/)
     return m ? m[0] : null
   }
-  // youtube.com/watch?v=xxx 或 youtu.be/xxx（11 位 ID）
+  // youtube.com/watch?v=xxx 或 youtu.be/xxx 或 youtube.com/embed/xxx（11 位 ID）
   let m = url.match(/[?&]v=([a-zA-Z0-9_-]{11})/)
   if (m) return m[1]
   m = url.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/)
+  if (m) return m[1]
+  m = url.match(/\/embed\/([a-zA-Z0-9_-]{11})/)
   return m ? m[1] : null
 }
 
