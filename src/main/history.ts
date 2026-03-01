@@ -52,6 +52,8 @@ export async function addHistory(item: Omit<HistoryItem, 'id' | 'createdAt'>): P
   }
 
   const filePath = getHistoryFile()
+  // 确保目录存在（app.getPath('userData') 返回路径但不保证目录已创建）
+  await fs.mkdir(path.dirname(filePath), { recursive: true })
   await fs.writeFile(filePath, JSON.stringify(filtered, null, 2))
   console.log('[history] 文件写入成功:', filePath)
 }

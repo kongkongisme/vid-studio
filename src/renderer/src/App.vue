@@ -1335,7 +1335,7 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
               <input
                 ref="searchInputRef"
                 v-model="searchQuery"
-                placeholder="搜索时间轴（/ 快捷键）..."
+                placeholder="搜索标题 / 摘要 / 关键词（按 / 聚焦）"
                 class="w-full pl-8 pr-7 py-1.5 bg-slate-50 rounded-lg text-sm outline-none focus:bg-slate-100 transition-colors"
               />
               <button
@@ -1640,14 +1640,14 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
 
     <!-- 剪贴板检测 Toast -->
     <Transition
-      enter-from-class="opacity-0 translate-x-4"
+      enter-from-class="opacity-0 translate-y-4"
       enter-active-class="transition duration-300"
-      leave-to-class="opacity-0 translate-x-4"
+      leave-to-class="opacity-0 translate-y-4"
       leave-active-class="transition duration-200"
     >
       <div
         v-if="showClipboardToast"
-        class="fixed top-4 right-4 z-50 flex items-center gap-3 px-4 py-3 bg-slate-800 text-white rounded-lg shadow-xl"
+        class="fixed bottom-4 right-4 z-50 flex items-center gap-3 px-4 py-3 bg-slate-800 text-white rounded-lg shadow-xl"
       >
         <IconClipboard class="w-4 h-4 text-blue-400" />
         <div class="flex flex-col">
