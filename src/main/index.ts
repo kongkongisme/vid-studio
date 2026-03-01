@@ -1,7 +1,7 @@
 import { app, shell, BrowserWindow, ipcMain, session } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import { spawn, type ChildProcess } from 'child_process'
+import { spawn, execSync, type ChildProcess } from 'child_process'
 import { readFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import icon from '../../resources/icon.png?asset'
@@ -11,6 +11,49 @@ const pythonBin = process.platform === 'win32' ? 'python' : 'python3'
 const vidEnginePath = is.dev
   ? join(process.cwd(), 'vid-engine')
   : join(process.resourcesPath, 'vid-engine')
+
+// ─── 代理检测：将系统代理注入 Python 子进程 ────────────────
+// Electron webview 会自动走系统代理，但 spawn 出的子进程不会，需手动传入。
+
+function detectSystemProxy(): string | null {
+  // 1. 优先沿用已有的代理环境变量
+  for (const key of ['https_proxy', 'http_proxy', 'HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY']) {
+    if (process.env[key]) return process.env[key]!
+  }
+  // 2. macOS：从 System Preferences 读取
+  if (process.platform === 'darwin') {
+    try {
+      const out = execSync('scutil --proxy', { timeout: 3000 }).toString()
+      // 优先 HTTPS 代理
+      if (/HTTPSEnable\s*:\s*1/.test(out)) {
+        const host = out.match(/HTTPSProxy\s*:\s*(\S+)/)?.[1]
+        const port = out.match(/HTTPSPort\s*:\s*(\d+)/)?.[1]
+        if (host && port) return `http://${host}:${port}`
+      }
+      // 其次 HTTP 代理
+      if (/HTTPEnable\s*:\s*1/.test(out)) {
+        const host = out.match(/HTTPProxy\s*:\s*(\S+)/)?.[1]
+        const port = out.match(/HTTPPort\s*:\s*(\d+)/)?.[1]
+        if (host && port) return `http://${host}:${port}`
+      }
+    } catch { /* 无代理或命令不可用，静默忽略 */ }
+  }
+  return null
+}
+
+// 启动时检测一次，避免每次 spawn 重复调用
+const PROXY_URL = detectSystemProxy()
+
+function buildSpawnEnv(): NodeJS.ProcessEnv {
+  if (!PROXY_URL) return process.env
+  return {
+    ...process.env,
+    http_proxy: PROXY_URL,
+    https_proxy: PROXY_URL,
+    HTTP_PROXY: PROXY_URL,
+    HTTPS_PROXY: PROXY_URL,
+  }
+}
 
 // ─── 工具：读取 .env key / 运行 Python 脚本 ──────────────
 
@@ -28,7 +71,7 @@ async function readEnvKey(key: string): Promise<string> {
 function runPython(scriptName: string, args: string[] = []): Promise<string> {
   return new Promise((resolve, reject) => {
     let out = ''
-    const proc = spawn(pythonBin, [scriptName, ...args], { cwd: vidEnginePath })
+    const proc = spawn(pythonBin, [scriptName, ...args], { cwd: vidEnginePath, env: buildSpawnEnv() })
     proc.stdout.on('data', (d: Buffer) => (out += d.toString()))
     proc.on('close', () => resolve(out))
     proc.on('error', reject)
@@ -148,7 +191,7 @@ ipcMain.handle('parse-video', async (event, url: string, options: ParseOptions =
   if (options.skipVideo !== false) args.push('--skip-video')
 
   return new Promise<{ success: boolean; output?: string; error?: string }>((resolve) => {
-    const proc = spawn(pythonBin, args, { cwd: vidEnginePath })
+    const proc = spawn(pythonBin, args, { cwd: vidEnginePath, env: buildSpawnEnv() })
     currentParseProc = proc
 
     proc.stdout.on('data', (d: Buffer) => event.sender.send('parse-progress', d.toString()))
