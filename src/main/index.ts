@@ -101,6 +101,39 @@ ipcMain.handle('import-browser-cookies', async () => {
   }
 })
 
+// ─── IPC：从浏览器导入 YouTube cookies ───────────────────
+ipcMain.handle('import-youtube-cookies', async () => {
+  try {
+    const raw = await runPython('extract_cookies.py', ['--site', 'youtube'])
+    const result = JSON.parse(raw.trim()) as {
+      success: boolean
+      browser?: string
+      count?: number
+      cookies?: Electron.CookiesSetDetails[]
+      error?: string
+    }
+
+    if (!result.success || !result.cookies?.length) {
+      return { success: false, error: result.error }
+    }
+
+    const ytSession = session.fromPartition('persist:youtube')
+    let imported = 0
+    for (const cookie of result.cookies) {
+      try {
+        await ytSession.cookies.set(cookie)
+        imported++
+      } catch {
+        // 跳过格式异常的 cookie
+      }
+    }
+
+    return { success: true, browser: result.browser, count: imported }
+  } catch (e) {
+    return { success: false, error: String(e) }
+  }
+})
+
 // ─── IPC：解析视频 ────────────────────────────────────────
 interface ParseOptions {
   skipVideo?: boolean
