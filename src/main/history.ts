@@ -15,12 +15,16 @@ export interface HistoryItem {
   duration?: number
 }
 
-const HISTORY_FILE = path.join(app.getPath('userData'), 'history.json')
 const MAX_ITEMS = 50
+
+// 延迟获取文件路径，确保 app 已 ready
+function getHistoryFile(): string {
+  return path.join(app.getPath('userData'), 'history.json')
+}
 
 export async function getHistory(): Promise<HistoryItem[]> {
   try {
-    const data = await fs.readFile(HISTORY_FILE, 'utf-8')
+    const data = await fs.readFile(getHistoryFile(), 'utf-8')
     return JSON.parse(data)
   } catch {
     return []
@@ -28,7 +32,9 @@ export async function getHistory(): Promise<HistoryItem[]> {
 }
 
 export async function addHistory(item: Omit<HistoryItem, 'id' | 'createdAt'>): Promise<void> {
+  console.log('[history] addHistory 被调用:', item)
   const history = await getHistory()
+  console.log('[history] 当前历史记录数:', history.length)
 
   const newItem: HistoryItem = {
     ...item,
@@ -45,7 +51,9 @@ export async function addHistory(item: Omit<HistoryItem, 'id' | 'createdAt'>): P
     filtered.pop()
   }
 
-  await fs.writeFile(HISTORY_FILE, JSON.stringify(filtered, null, 2))
+  const filePath = getHistoryFile()
+  await fs.writeFile(filePath, JSON.stringify(filtered, null, 2))
+  console.log('[history] 文件写入成功:', filePath)
 }
 
 export async function toggleFavorite(id: string): Promise<void> {
@@ -53,12 +61,12 @@ export async function toggleFavorite(id: string): Promise<void> {
   const item = history.find((h) => h.id === id)
   if (item) {
     item.favorited = !item.favorited
-    await fs.writeFile(HISTORY_FILE, JSON.stringify(history, null, 2))
+    await fs.writeFile(getHistoryFile(), JSON.stringify(history, null, 2))
   }
 }
 
 export async function deleteHistory(id: string): Promise<void> {
   const history = await getHistory()
   const filtered = history.filter((h) => h.id !== id)
-  await fs.writeFile(HISTORY_FILE, JSON.stringify(filtered, null, 2))
+  await fs.writeFile(getHistoryFile(), JSON.stringify(filtered, null, 2))
 }

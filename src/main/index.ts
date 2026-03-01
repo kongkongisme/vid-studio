@@ -312,9 +312,11 @@ ipcMain.handle('get-history', async () => {
 
 ipcMain.handle('add-history', async (_, item) => {
   try {
+    console.log('[main] add-history 收到请求:', item)
     await addHistory(item)
-  } catch {
-    // 静默失败
+  } catch (e) {
+    console.error('[main] add-history 失败:', e)
+    throw e
   }
 })
 

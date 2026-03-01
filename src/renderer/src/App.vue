@@ -671,9 +671,14 @@ async function loadHistory(): Promise<void> {
 }
 
 async function saveHistory(_output: string): Promise<void> {
-  if (!currentPlatform.value || !videoId.value) return
+  console.log('[saveHistory] 开始保存，currentPlatform:', currentPlatform.value, 'videoId:', videoId.value)
+  if (!currentPlatform.value || !videoId.value) {
+    console.log('[saveHistory] 跳过：平台或视频ID为空')
+    return
+  }
 
   const title = timelineChunks.value[0]?.title || '未命名视频'
+  console.log('[saveHistory] 标题:', title, 'URL:', url.value)
   try {
     await window.api.addHistory({
       url: url.value,
@@ -682,9 +687,10 @@ async function saveHistory(_output: string): Promise<void> {
       mode: skipVideo.value ? 'asr' : 'visual',
       favorited: false
     })
+    console.log('[saveHistory] 保存成功')
     await loadHistory()
-  } catch {
-    // 静默失败
+  } catch (e) {
+    console.error('[saveHistory] 保存失败:', e)
   }
 }
 
