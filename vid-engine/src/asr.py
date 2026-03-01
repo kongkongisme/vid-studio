@@ -122,11 +122,16 @@ class ASRProcessor:
         """调用 SiliconFlow ASR API 转录单个文件"""
         cfg = get_config()
         headers = {"Authorization": f"Bearer {self.api_key}"}
+        # SiliconFlow API 可直连，无需走系统代理；
+        # trust_env=False 彻底禁用环境变量代理（含 all_proxy），
+        # 避免大文件通过 HTTP CONNECT 代理上传时触发 SSL EOF。
+        _session = requests.Session()
+        _session.trust_env = False
 
         for attempt in range(max_retries):
             try:
                 with open(audio_path, "rb") as f:
-                    response = requests.post(
+                    response = _session.post(
                         _API_URL,
                         headers=headers,
                         files={"file": (Path(audio_path).name, f, "audio/mpeg")},
