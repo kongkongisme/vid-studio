@@ -114,6 +114,8 @@ interface HistoryItem {
 const historyList = ref<HistoryItem[]>([])
 const showHistoryPanel = ref(false)
 const historySearch = ref('')
+const cachedUrls = ref(new Set<string>())
+const cacheLoadedMsg = ref(false)
 
 // ─── Phase 3: 时间轴搜索 ───────────────────────────────────
 
@@ -432,9 +434,28 @@ function clearChat(confirm = false): void {
 
 // ─── Markdown 渲染 ────────────────────────────────────────
 
+// 匹配 [MM:SS] 或 [HH:MM:SS] 格式的时间戳（用于 renderMarkdown 后处理）
+const TS_REGEX = /\[(\d{1,2}):(\d{2})(?::(\d{2}))?\]/g
+
 function renderMarkdown(content: string, streaming = false): string {
   if (!content) return ''
   let html = (marked.parse(content) as string).trim()
+
+  // 将 [MM:SS] 或 [HH:MM:SS] 替换为可点击的时间戳链接（跳过 <code>/<pre> 块）
+  const parts = html.split(/(<code[\s\S]*?<\/code>|<pre[\s\S]*?<\/pre>)/)
+  html = parts
+    .map((part, i) => {
+      if (i % 2 === 1) return part // 奇数索引是 code/pre 块，原样保留
+      return part.replace(TS_REGEX, (match, p1, p2, p3) => {
+        const hours = p3 !== undefined ? Number(p1) : 0
+        const minutes = p3 !== undefined ? Number(p2) : Number(p1)
+        const seconds = p3 !== undefined ? Number(p3) : Number(p2)
+        const total = hours * 3600 + minutes * 60 + seconds
+        return `<a class="ts-link" data-seconds="${total}" href="#">${match}</a>`
+      })
+    })
+    .join('')
+
   if (streaming) {
     // 在最后一个 </p> 前插入光标，使其显示在段落文字末尾
     const lastP = html.lastIndexOf('</p>')
@@ -444,6 +465,16 @@ function renderMarkdown(content: string, streaming = false): string {
       : html + cursor
   }
   return html
+}
+
+// 处理 markdown 区域的点击（事件委托：时间戳跳转）
+function handleMarkdownClick(e: MouseEvent): void {
+  const target = e.target as HTMLElement
+  const link = target.closest('[data-seconds]') as HTMLElement | null
+  if (!link) return
+  e.preventDefault()
+  const seconds = Number(link.dataset.seconds)
+  if (!isNaN(seconds)) seekTo(seconds)
 }
 
 // 构建引用片段的 LLM 上下文（含标题、总结、核心观点、原文片段）
@@ -1545,7 +1576,7 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
                   v-if="msg.role === 'user'"
                   class="px-3 py-2 text-sm leading-relaxed bg-blue-500 text-white rounded-2xl rounded-tr-sm"
                 >
-                  <p class="whitespace-pre-wrap">{{ msg.content }}</p>
+                  <p class="whitespace-pre-wrap select-text">{{ msg.content }}</p>
                 </div>
                 <!-- 助手消息：Markdown 渲染 + 流式光标 -->
                 <div
@@ -1561,8 +1592,9 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
                   <!-- 有内容时渲染 Markdown（流式状态带光标） -->
                   <div
                     v-else
-                    class="markdown-body"
+                    class="markdown-body select-text"
                     v-html="renderMarkdown(msg.content, msg.streaming)"
+                    @click="handleMarkdownClick"
                   />
                 </div>
               </div>
@@ -1701,6 +1733,23 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
 }
 .markdown-body blockquote > p { margin: 0; }
 .markdown-body a { color: #3b82f6; text-decoration: underline; }
+.markdown-body .ts-link {
+  display: inline-block;
+  color: #3b82f6;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8em;
+  background: #eff6ff;
+  padding: 1px 5px;
+  border-radius: 3px;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+.markdown-body .ts-link:hover {
+  background: #dbeafe;
+  text-decoration: underline;
+}
 .markdown-body hr { border: none; border-top: 1px solid #e2e8f0; margin: 0.75em 0; }
 .markdown-body table { border-collapse: collapse; width: 100%; margin: 0.5em 0; font-size: 0.85em; }
 .markdown-body th, .markdown-body td { border: 1px solid #e2e8f0; padding: 0.35em 0.6em; text-align: left; }
