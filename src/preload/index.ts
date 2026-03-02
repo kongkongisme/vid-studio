@@ -79,7 +79,13 @@ const api = {
 
   deleteHistory: (id: string): Promise<void> => ipcRenderer.invoke('delete-history', id),
 
-  readFile: (path: string): Promise<string | null> => ipcRenderer.invoke('read-file', path)
+  readFile: (path: string): Promise<string | null> => ipcRenderer.invoke('read-file', path),
+
+  // 解析内容缓存
+  getCache: (url: string): Promise<string | null> => ipcRenderer.invoke('get-cache', url),
+  setCache: (url: string, content: string): Promise<void> => ipcRenderer.invoke('set-cache', url, content),
+  deleteCache: (url: string): Promise<void> => ipcRenderer.invoke('delete-cache', url),
+  getCachedUrls: (): Promise<string[]> => ipcRenderer.invoke('get-cached-urls')
 }
 
 if (process.contextIsolated) {
