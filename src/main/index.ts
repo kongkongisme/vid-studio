@@ -1,5 +1,6 @@
 import { app, shell, BrowserWindow, ipcMain, session } from 'electron'
 import { getHistory, addHistory, toggleFavorite, deleteHistory } from './history'
+import { getCachedContent, setCachedContent, deleteCachedContent, getCachedUrls } from './cache'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { spawn, execSync, type ChildProcess } from 'child_process'
@@ -341,6 +342,40 @@ ipcMain.handle('read-file', async (_, filePath: string) => {
     return await readFile(filePath, 'utf-8')
   } catch {
     return null
+  }
+})
+
+// ─── IPC：解析内容缓存 ────────────────────────────────────────
+
+ipcMain.handle('get-cache', (_, url: string) => {
+  try {
+    return getCachedContent(url)
+  } catch {
+    return null
+  }
+})
+
+ipcMain.handle('set-cache', (_, url: string, content: string) => {
+  try {
+    setCachedContent(url, content)
+  } catch (e) {
+    console.error('[main] set-cache 失败:', e)
+  }
+})
+
+ipcMain.handle('delete-cache', (_, url: string) => {
+  try {
+    deleteCachedContent(url)
+  } catch {
+    // 静默失败
+  }
+})
+
+ipcMain.handle('get-cached-urls', () => {
+  try {
+    return getCachedUrls()
+  } catch {
+    return []
   }
 })
 
