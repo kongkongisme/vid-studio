@@ -1,6 +1,6 @@
 {
   "name": "vid-studio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "VidStudio 视析工作站 — 低成本 B 站视频结构化理解桌面应用",
   "main": "./out/main/index.js",
   "author": "example.com",
