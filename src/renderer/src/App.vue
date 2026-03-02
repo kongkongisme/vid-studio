@@ -1163,6 +1163,13 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
                   </div>
                 </div>
 
+                <!-- 缓存标识 -->
+                <IconBolt
+                  v-if="cachedUrls.has(item.url)"
+                  class="w-3.5 h-3.5 text-blue-400 shrink-0 opacity-60"
+                  title="已缓存，点击秒加载"
+                />
+
                 <!-- 操作按钮 -->
                 <button
                   @click.stop="toggleFavoriteHistory(item.id)"
@@ -1366,6 +1373,22 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
               </div>
             </div>
           </div>
+
+          <!-- 从缓存加载提示 -->
+          <Transition
+            enter-active-class="transition-all duration-300"
+            leave-active-class="transition-all duration-200"
+            enter-from-class="opacity-0 -translate-y-1"
+            leave-to-class="opacity-0 -translate-y-1"
+          >
+            <div
+              v-if="cacheLoadedMsg"
+              class="shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-500 text-xs border-b border-blue-100"
+            >
+              <IconBolt class="w-3 h-3" />
+              从缓存加载
+            </div>
+          </Transition>
 
           <!-- 搜索框 -->
           <div
