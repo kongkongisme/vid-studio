@@ -51,9 +51,13 @@ Python (vid-engine)
 | 方法 | 方向 | 说明 |
 |------|------|------|
 | `api.importBrowserCookies()` | 渲染→主 | 从 Edge/Chrome 提取 B 站 Cookies |
-| `api.parseVideo(url, options)` | 渲染→主 | 启动 Python 解析，输出写入 `/tmp` |
+| `api.parseVideo(url, options)` | 渲染→主 | 启动 Python 解析，结果含 `output`（Markdown）和 `danmaku`（弹幕 JSON，可选） |
 | `api.stopParse()` | 渲染→主 | Kill Python 子进程 |
 | `api.onParseProgress(cb)` | 主→渲染 | 实时流式进度输出（Python stdout/stderr） |
+
+**`PipelineOptions` 参数说明：**
+
+- `skipDanmaku?: boolean` — 跳过弹幕获取（默认 false）
 
 ### 前端核心文件
 
