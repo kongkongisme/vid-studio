@@ -434,25 +434,39 @@ function clearChat(confirm = false): void {
 
 // ─── Markdown 渲染 ────────────────────────────────────────
 
-// 匹配 [MM:SS] 或 [HH:MM:SS] 格式的时间戳（用于 renderMarkdown 后处理）
-const TS_REGEX = /\[(\d{1,2}):(\d{2})(?::(\d{2}))?\]/g
+// 时间戳格式匹配正则（用于 renderMarkdown 后处理）
+// 格式1：[MM:SS] 或 [HH:MM:SS]（方括号）
+const TS_BRACKET_REGEX = /\[(\d{1,2}):(\d{2})(?::(\d{2}))?\]/g
+// 格式2：（MM:SS-MM:SS）时间范围（全角括号），点击跳转起始时间
+const TS_WIDE_RANGE_REGEX = /（(\d{1,2}):(\d{2})(?::(\d{2}))?\s*[-–]\s*\d{1,2}:\d{2}(?::\d{2})?）/g
+// 格式3：（MM:SS）单个时间点（全角括号）
+const TS_WIDE_SINGLE_REGEX = /（(\d{1,2}):(\d{2})(?::(\d{2}))?）/g
+
+function parseSeconds(p1: string, p2: string, p3: string | undefined): number {
+  const hours = p3 !== undefined ? Number(p1) : 0
+  const minutes = p3 !== undefined ? Number(p2) : Number(p1)
+  const seconds = p3 !== undefined ? Number(p3) : Number(p2)
+  return hours * 3600 + minutes * 60 + seconds
+}
 
 function renderMarkdown(content: string, streaming = false): string {
   if (!content) return ''
   let html = (marked.parse(content) as string).trim()
 
-  // 将 [MM:SS] 或 [HH:MM:SS] 替换为可点击的时间戳链接（跳过 <code>/<pre> 块）
+  // 将时间戳替换为可点击链接（跳过 <code>/<pre> 块）
+  // 支持：[MM:SS]、（MM:SS）、（MM:SS-MM:SS）格式
+  const tsReplacer = (match: string, p1: string, p2: string, p3: string | undefined): string => {
+    const total = parseSeconds(p1, p2, p3)
+    return `<a class="ts-link" data-seconds="${total}" href="#">${match}</a>`
+  }
   const parts = html.split(/(<code[\s\S]*?<\/code>|<pre[\s\S]*?<\/pre>)/)
   html = parts
     .map((part, i) => {
       if (i % 2 === 1) return part // 奇数索引是 code/pre 块，原样保留
-      return part.replace(TS_REGEX, (match, p1, p2, p3) => {
-        const hours = p3 !== undefined ? Number(p1) : 0
-        const minutes = p3 !== undefined ? Number(p2) : Number(p1)
-        const seconds = p3 !== undefined ? Number(p3) : Number(p2)
-        const total = hours * 3600 + minutes * 60 + seconds
-        return `<a class="ts-link" data-seconds="${total}" href="#">${match}</a>`
-      })
+      return part
+        .replace(TS_BRACKET_REGEX, tsReplacer)
+        .replace(TS_WIDE_RANGE_REGEX, tsReplacer)
+        .replace(TS_WIDE_SINGLE_REGEX, tsReplacer)
     })
     .join('')
 
