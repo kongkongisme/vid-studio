@@ -1,6 +1,6 @@
 """yt-dlp 封装：视频元信息获取、字幕下载、音频提取"""
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import yt_dlp
 
@@ -59,6 +59,28 @@ class VideoDownloader:
                 uploader=info.get("uploader", ""),
                 language=info.get("language", "") or "",
             )
+
+    def get_video_meta_with_info(self, url: str) -> Tuple["VideoMeta", dict]:
+        """获取视频元信息，同时返回完整 info 字典（YouTube 含评论）"""
+        is_youtube = "youtube.com" in url or "youtu.be" in url
+        opts = {
+            **self._base_opts(),
+            "extract_flat": False,
+        }
+        if is_youtube:
+            opts["getcomments"] = True
+            opts["extractor_args"] = {"youtube": {"comment_sort": ["top"], "max_comments": ["100"]}}
+
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            meta = VideoMeta(
+                id=info.get("id", ""),
+                title=info.get("title", "未知标题"),
+                duration=int(info.get("duration") or 0),
+                uploader=info.get("uploader", ""),
+                language=info.get("language", "") or "",
+            )
+            return meta, info
 
     def download_video(self, url: str) -> str:
         """下载低画质视频文件（360p），用于视频理解模型"""

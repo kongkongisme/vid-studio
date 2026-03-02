@@ -69,6 +69,11 @@ def parse_args():
         action="store_true",
         help="禁用 embedding 缓存，每次重新调用 API",
     )
+    parser.add_argument(
+        "--skip-danmaku",
+        action="store_true",
+        help="跳过弹幕获取，加快处理速度",
+    )
     return parser.parse_args()
 
 
@@ -84,6 +89,7 @@ def main():
         resume=args.resume,
         fresh=args.fresh,
         no_cache=args.no_cache,
+        skip_danmaku=args.skip_danmaku,
     )
     run(args.url, args.output, options)
 

@@ -23,6 +23,7 @@ class PipelineOptions:
     resume: bool = False               # 从断点续跑，跳过已完成的块
     fresh: bool = False                # 清除断点缓存，强制全量重跑（优先于 resume）
     no_cache: bool = False             # 禁用 embedding 缓存
+    skip_danmaku: bool = False         # 跳过弹幕获取
 
 
 def _adaptive_seg_params(duration_seconds: int) -> dict:
@@ -41,16 +42,16 @@ def _adaptive_seg_params(duration_seconds: int) -> dict:
         return dict(window_seconds=90, min_chunk_seconds=180, max_chunk_seconds=900)
 
 
-def _fetch_meta(downloader: VideoDownloader, url: str) -> VideoMeta:
-    """获取视频元信息"""
+def _fetch_meta(downloader: VideoDownloader, url: str) -> Tuple[VideoMeta, Optional[dict]]:
+    """获取视频元信息，同时返回原始 ydl info（YouTube 含评论）"""
     print("获取视频信息...")
     try:
-        meta = downloader.get_video_meta(url)
+        meta, raw_info = downloader.get_video_meta_with_info(url)
     except Exception as e:
         raise RuntimeError(f"无法获取视频信息（{e}）\n请检查 URL 是否正确，网络是否畅通。")
     print(f"  标题：{meta.title}")
     print(f"  时长：{meta.duration}秒  UP主：{meta.uploader}")
-    return meta
+    return meta, raw_info
 
 
 def _run_video_understanding(
@@ -139,6 +140,26 @@ def _analyze_segment_visuals(
     return results
 
 
+def _fetch_danmaku(url: str, meta: VideoMeta, raw_info: Optional[dict] = None):
+    """获取弹幕/评论数据，失败返回 None"""
+    from src.danmaku import DanmakuProcessor
+    proc = DanmakuProcessor()
+
+    if meta.id.startswith("BV"):
+        print("  获取 B 站弹幕...")
+        data = proc.fetch_bilibili(meta.id)
+    elif raw_info and raw_info.get("comments"):
+        print("  处理 YouTube 评论...")
+        data = proc.fetch_youtube(raw_info["comments"])
+    else:
+        print("  非 B 站视频且无评论数据，跳过弹幕获取")
+        return None
+
+    if data:
+        print(f"  获取到 {data.total_count} 条弹幕/评论")
+    return data
+
+
 def run(url: str, output_path: str, options: Optional[PipelineOptions] = None) -> None:
     """主处理流程"""
     options = options or PipelineOptions()
@@ -153,7 +174,7 @@ def run(url: str, output_path: str, options: Optional[PipelineOptions] = None) -
 
         # 1. 元信息
         try:
-            meta = _fetch_meta(downloader, url)
+            meta, raw_info = _fetch_meta(downloader, url)
         except RuntimeError as e:
             print(f"错误：{e}")
             sys.exit(1)
@@ -171,12 +192,22 @@ def run(url: str, output_path: str, options: Optional[PipelineOptions] = None) -
             except RuntimeError as e:
                 print(f"错误：{e}")
                 sys.exit(1)
+            # skip_video 分支：串行获取弹幕
+            danmaku_data = None
+            if not options.skip_danmaku:
+                print("\n获取弹幕数据...")
+                danmaku_data = _fetch_danmaku(url, meta, raw_info)
         else:
-            # 视频理解 + 字幕/音频 并行执行，节省等待时间
-            print("\n并行执行视频理解 + 字幕/语音获取...")
-            with ThreadPoolExecutor(max_workers=2) as executor:
+            # 视频理解 + 字幕/音频 + 弹幕 并行执行，节省等待时间
+            print("\n并行执行视频理解 + 字幕/语音获取 + 弹幕...")
+            with ThreadPoolExecutor(max_workers=3) as executor:
                 vu_future = executor.submit(_run_video_understanding, downloader, url)
                 seg_future = executor.submit(_get_segments, downloader, url, meta.language)
+                dm_future = (
+                    executor.submit(_fetch_danmaku, url, meta, raw_info)
+                    if not options.skip_danmaku
+                    else None
+                )
 
                 try:
                     segments = seg_future.result()
@@ -185,6 +216,7 @@ def run(url: str, output_path: str, options: Optional[PipelineOptions] = None) -
                     sys.exit(1)
 
                 video_analysis, video_file = vu_future.result()
+                danmaku_data = dm_future.result() if dm_future else None
 
         if not segments:
             print("错误：未能获取任何字幕或语音内容，无法处理。")
@@ -197,6 +229,15 @@ def run(url: str, output_path: str, options: Optional[PipelineOptions] = None) -
         segmenter = SemanticSegmenter(block_size=2, smoothing_width=2, **seg_params)
         chunks = segmenter.chunk(segments)
         print(f"  分为 {len(chunks)} 个章节块")
+
+        # 弹幕 chunk 映射
+        danmaku_contexts: Dict[int, str] = {}
+        if danmaku_data:
+            from src.danmaku import DanmakuProcessor
+            proc = DanmakuProcessor()
+            print("\n构建弹幕段落映射...")
+            danmaku_contexts = proc.build_chunk_contexts(danmaku_data, chunks)
+            print(f"  {len(danmaku_contexts)}/{len(chunks)} 个段落有弹幕数据")
 
         # 4. 段落级视觉融合（可选，需要视频文件 + ZHIPUAI_API_KEY）
         visual_contexts: Dict[int, str] = {}
@@ -244,3 +285,17 @@ def run(url: str, output_path: str, options: Optional[PipelineOptions] = None) -
         output_file = Path(output_path)
         output_file.write_text(output, encoding="utf-8")
         print(f"\n完成！结果已写入：{output_file.resolve()}")
+
+        # 写出弹幕 JSON（可选）
+        if danmaku_data:
+            import json as _json
+            danmaku_path = Path(output_path + ".danmaku.json")
+            danmaku_dict = {
+                "platform": danmaku_data.platform,
+                "total_count": danmaku_data.total_count,
+                "word_freq": danmaku_data.word_freq,
+                "density_bins": danmaku_data.density_bins,
+                "chunk_top": danmaku_data.chunk_top,
+            }
+            danmaku_path.write_text(_json.dumps(danmaku_dict, ensure_ascii=False), encoding="utf-8")
+            print(f"弹幕数据已写入：{danmaku_path.resolve()}")
