@@ -13,6 +13,12 @@ function getDb(): InstanceType<typeof DatabaseSync> {
   if (!db) {
     const dbPath = path.join(app.getPath('userData'), 'cache.db')
     db = new DatabaseSync(dbPath)
+    // 应用退出前关闭数据库，确保写入完整性
+    app.once('will-quit', () => {
+      // @ts-ignore
+      db?.close()
+      db = null
+    })
     db.exec(`
       CREATE TABLE IF NOT EXISTS video_cache (
         url       TEXT PRIMARY KEY,
