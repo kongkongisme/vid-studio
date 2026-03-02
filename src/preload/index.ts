@@ -5,6 +5,14 @@ interface ParseOptions {
   skipVideo?: boolean
 }
 
+interface DanmakuData {
+  platform: string
+  total_count: number
+  word_freq: [string, number][]
+  density_bins: [number, number, number][]
+  chunk_top: Record<string, string[]>
+}
+
 interface ApiChatMessage {
   role: string
   content: string
@@ -46,7 +54,7 @@ const api = {
   parseVideo: (
     url: string,
     options?: ParseOptions
-  ): Promise<{ success: boolean; output?: string; error?: string }> =>
+  ): Promise<{ success: boolean; output?: string; danmaku?: DanmakuData | null; error?: string }> =>
     ipcRenderer.invoke('parse-video', url, options),
 
   // 订阅解析进度流，返回取消函数
@@ -67,6 +75,13 @@ const api = {
     const handler = (_: Electron.IpcRendererEvent, delta: string): void => callback(delta)
     ipcRenderer.on('chat-stream-chunk', handler)
     return () => ipcRenderer.removeListener('chat-stream-chunk', handler)
+  },
+
+  // 订阅搜索关键词事件（LLM 调用 Tavily 时触发），返回取消函数
+  onChatSearchQuery: (callback: (query: string) => void): (() => void) => {
+    const handler = (_: Electron.IpcRendererEvent, query: string): void => callback(query)
+    ipcRenderer.on('chat-search-query', handler)
+    return () => ipcRenderer.removeListener('chat-search-query', handler)
   },
 
   // 历史管理

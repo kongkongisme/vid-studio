@@ -192,7 +192,7 @@ ipcMain.handle('parse-video', async (event, url: string, options: ParseOptions =
   const args = ['main.py', url, '-o', outputPath]
   if (options.skipVideo !== false) args.push('--skip-video')
 
-  return new Promise<{ success: boolean; output?: string; error?: string }>((resolve) => {
+  return new Promise<{ success: boolean; output?: string; danmaku?: object | null; error?: string }>((resolve) => {
     const proc = spawn(pythonBin, args, { cwd: vidEnginePath, env: buildSpawnEnv() })
     currentParseProc = proc
 
@@ -208,7 +208,15 @@ ipcMain.handle('parse-video', async (event, url: string, options: ParseOptions =
       }
       if (code === 0) {
         try {
-          resolve({ success: true, output: await readFile(outputPath, 'utf-8') })
+          const output = await readFile(outputPath, 'utf-8')
+          let danmaku: object | null = null
+          try {
+            const raw = await readFile(`${outputPath}.danmaku.json`, 'utf-8')
+            danmaku = JSON.parse(raw)
+          } catch {
+            // 弹幕数据可选，获取失败静默忽略
+          }
+          resolve({ success: true, output, danmaku })
         } catch {
           resolve({ success: false, error: '读取输出文件失败' })
         }
