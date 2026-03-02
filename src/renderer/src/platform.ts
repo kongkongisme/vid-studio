@@ -25,6 +25,19 @@ export function extractVideoId(url: string, platform: Platform): string | null {
   return m ? m[1] : null
 }
 
+/** 从任意文本中提取第一个 B 站 / YouTube 链接，若无完整 URL 则尝试裸 BV 号 */
+export function extractUrlFromText(text: string): string | null {
+  // 优先匹配完整 URL
+  const urlMatch = text.match(
+    /https?:\/\/(?:www\.)?(?:bilibili\.com\/video\/BV[a-zA-Z0-9]+|youtube\.com\/watch\?[^\s]*|youtu\.be\/[a-zA-Z0-9_-]+)[^\s]*/
+  )
+  if (urlMatch) return urlMatch[0]
+  // 裸 BV 号
+  const bvMatch = text.match(/BV[a-zA-Z0-9]{10,}/)
+  if (bvMatch) return bvMatch[0]
+  return null
+}
+
 export function validateUrl(url: string): string | null {
   const trimmed = url.trim()
   if (!trimmed) return '请输入视频链接'

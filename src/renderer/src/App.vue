@@ -718,7 +718,8 @@ async function stopParse(): Promise<void> {
 
 function applyExtractedUrl(text: string): string {
   const trimmed = text.trim()
-  if (!validateUrl(trimmed)) return trimmed // 本身就是合法链接
+  // URL 本身不含空格/换行；含空格说明有周围文字，尝试提取
+  if (!trimmed.includes(' ') && !trimmed.includes('\n')) return trimmed
   const extracted = extractUrlFromText(trimmed)
   if (extracted && !validateUrl(extracted)) {
     urlExtractedHint.value = true
