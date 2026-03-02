@@ -719,6 +719,7 @@ async function saveHistory(output: string): Promise<void> {
       favorited: false
     })
     await window.api.setCache(url.value, output)
+    cachedUrls.value.add(url.value)
     console.log('[saveHistory] 保存成功（含缓存）')
     await loadHistory()
   } catch (e) {
