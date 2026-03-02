@@ -51,6 +51,11 @@ declare global {
       toggleFavorite: (id: string) => Promise<void>
       deleteHistory: (id: string) => Promise<void>
       readFile: (path: string) => Promise<string | null>
+      // 缓存管理
+      setCache: (url: string, output: string) => Promise<void>
+      getCache: (url: string) => Promise<string | null>
+      deleteCache: (url: string) => Promise<void>
+      getCachedUrls: () => Promise<string[]>
     }
   }
 }

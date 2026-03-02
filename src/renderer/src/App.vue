@@ -701,7 +701,7 @@ async function loadHistory(): Promise<void> {
   }
 }
 
-async function saveHistory(_output: string): Promise<void> {
+async function saveHistory(output: string): Promise<void> {
   console.log('[saveHistory] 开始保存，currentPlatform:', currentPlatform.value, 'videoId:', videoId.value)
   if (!currentPlatform.value || !videoId.value) {
     console.log('[saveHistory] 跳过：平台或视频ID为空')
@@ -718,7 +718,8 @@ async function saveHistory(_output: string): Promise<void> {
       mode: skipVideo.value ? 'asr' : 'visual',
       favorited: false
     })
-    console.log('[saveHistory] 保存成功')
+    await window.api.setCache(url.value, output)
+    console.log('[saveHistory] 保存成功（含缓存）')
     await loadHistory()
   } catch (e) {
     console.error('[saveHistory] 保存失败:', e)
@@ -736,8 +737,11 @@ async function toggleFavoriteHistory(id: string): Promise<void> {
 
 async function deleteHistoryItem(id: string): Promise<void> {
   try {
+    const item = historyList.value.find((h) => h.id === id)
     await window.api.deleteHistory(id)
+    if (item) await window.api.deleteCache(item.url)
     await loadHistory()
+    if (item) cachedUrls.value.delete(item.url)
   } catch {
     // 静默失败
   }
@@ -747,6 +751,12 @@ async function toggleHistoryPanel(): Promise<void> {
   showHistoryPanel.value = !showHistoryPanel.value
   if (showHistoryPanel.value) {
     await loadHistory()
+    try {
+      const urls = await window.api.getCachedUrls()
+      cachedUrls.value = new Set(urls)
+    } catch {
+      // 静默失败
+    }
   }
 }
 
@@ -755,24 +765,24 @@ async function loadHistoryItem(item: HistoryItem): Promise<void> {
   skipVideo.value = item.mode === 'asr'
   showHistoryPanel.value = false
 
-  // 尝试加载已保存的输出文件
-  if (item.outputPath) {
-    try {
-      const output = await window.api.readFile(item.outputPath)
-      if (output) {
-        timelineChunks.value = parseMarkdown(output)
-        // 设置平台
-        currentPlatform.value = item.platform
-        videoId.value = extractVideoId(item.url, item.platform) || ''
-        videoUrl.value = getWebviewUrl(videoId.value, item.platform)
-        return
-      }
-    } catch {
-      // 文件读取失败，重新解析
+  // 优先从 SQLite 缓存加载
+  try {
+    const cached = await window.api.getCache(item.url)
+    if (cached) {
+      timelineChunks.value = parseMarkdown(cached)
+      currentPlatform.value = item.platform
+      videoId.value = extractVideoId(item.url, item.platform) || ''
+      videoUrl.value = getWebviewUrl(videoId.value, item.platform)
+      // 显示"从缓存加载"提示，1.5s 后自动消失
+      cacheLoadedMsg.value = true
+      setTimeout(() => { cacheLoadedMsg.value = false }, 1500)
+      return
     }
+  } catch {
+    // 缓存读取失败，继续重新解析
   }
 
-  // 没有缓存或读取失败，重新解析
+  // 缓存未命中，重新解析（解析完成后 saveHistory 会自动写入缓存）
   await parseVideo()
 }
 
