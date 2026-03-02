@@ -115,17 +115,18 @@ class DanmakuProcessor:
 
     @staticmethod
     def _extract_words(text: str) -> List[str]:
-        """从弹幕文本提取词汇：短文本整体保留，长文本提取中文双字词"""
+        """从弹幕文本提取词汇：≤5字整体保留，长文本用非重叠双字词（step=2）"""
         clean = re.sub(r'[^\u4e00-\u9fa5a-zA-Z0-9]', '', text)
         if not clean:
             return []
-        if len(clean) <= 8:
+        # 大多数弹幕 ≤5 字，整体作为词单元保留（"牛逼""太厉害""哈哈哈"等）
+        if len(clean) <= 5:
             return [clean]
-        # 中文双字词（bigram）+ 英文单词
+        # 长文本：非重叠双字词（step=2，避免"常厉""的好"等无意义过渡片段）+ 英文单词
         zh = re.findall(r'[\u4e00-\u9fa5]{2,}', clean)
         words = []
         for chunk in zh:
-            for i in range(len(chunk) - 1):
+            for i in range(0, len(chunk) - 1, 2):
                 words.append(chunk[i:i + 2])
         words += re.findall(r'[a-zA-Z]{3,}', clean.lower())
         return words
@@ -133,7 +134,10 @@ class DanmakuProcessor:
     def _calc_word_freq(self, items: List[DanmakuItem], top_n: int = 50) -> List[Tuple[str, int]]:
         """统计弹幕词频，过滤停用词，返回 Top N"""
         counter: Counter = Counter()
-        stopwords = {"的", "了", "吗", "呢", "啊", "哦", "嗯", "哈", "呀", "就", "都", "也", "不", "是"}
+        stopwords = {
+            "的", "了", "吗", "呢", "啊", "哦", "嗯", "哈", "呀", "就", "都", "也", "不", "是",
+            "吧", "呵", "欸", "哎", "唉", "诶", "这", "那", "和", "有", "在", "没", "吗",
+        }
         for item in items:
             for word in self._extract_words(item.text):
                 if word not in stopwords and len(word) >= 2:

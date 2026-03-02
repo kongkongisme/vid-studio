@@ -212,6 +212,19 @@ const danmakuMaxBin = computed(() => {
 })
 
 
+/** 将秒数格式化为 M:SS 或 H:MM:SS，用于密度图 x 轴 */
+function formatBinTime(seconds: number): string {
+  if (seconds >= 3600) {
+    const h = Math.floor(seconds / 3600)
+    const m = Math.floor((seconds % 3600) / 60)
+    const s = Math.floor(seconds % 60)
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  }
+  const m = Math.floor(seconds / 60)
+  const s = Math.floor(seconds % 60)
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
 // ─── 工具函数 ─────────────────────────────────────────────
 
 function timeToSeconds(time: string): number {
@@ -1653,7 +1666,7 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
                 <!-- 弹幕反应（有弹幕数据时显示） -->
                 <div
                   v-if="danmakuData?.chunk_top?.[chunk.id]?.length"
-                  class="mt-3 pt-3 border-t border-gray-100"
+                  class="px-3 pb-3 pt-2.5 border-t border-gray-100"
                 >
                   <div class="text-xs font-medium text-gray-400 mb-1.5">弹幕反应</div>
                   <div class="space-y-1">
@@ -1711,26 +1724,24 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
               <span class="text-xs font-medium text-gray-600">弹幕密度</span>
               <span class="text-xs text-gray-400">共 {{ danmakuData.total_count }} 条</span>
             </div>
-            <div class="flex items-end gap-px h-16 bg-gray-50 rounded-lg p-2 overflow-x-auto">
+            <div class="flex items-end gap-px h-16 bg-gray-50 rounded-lg p-2">
               <div
                 v-for="(bin, i) in danmakuData.density_bins"
                 :key="i"
-                class="flex-shrink-0 w-1.5 rounded-sm transition-all cursor-pointer"
+                class="flex-1 min-w-[2px] max-w-[6px] rounded-sm transition-all cursor-pointer"
                 :style="{
                   height: `${Math.max(4, Math.round((bin[2] / danmakuMaxBin) * 48))}px`,
                   backgroundColor: `hsl(${210 - Math.round((bin[2] / danmakuMaxBin) * 150)}, 80%, ${65 - Math.round((bin[2] / danmakuMaxBin) * 25)}%)`
                 }"
-                :title="`${bin[0] >= 3600 ? Math.floor(bin[0] / 3600) + ':' + String(Math.floor((bin[0] % 3600) / 60)).padStart(2, '0') : Math.floor(bin[0] / 60)}:${String(Math.floor(bin[0] % 60)).padStart(2, '0')} — ${bin[2]} 条弹幕`"
+                :title="`${formatBinTime(bin[0])} — ${bin[2]} 条弹幕`"
               />
             </div>
             <div class="flex justify-between text-xs text-gray-400 mt-1 px-2">
               <span>0:00</span>
               <span v-if="danmakuData.density_bins.length > 4">
-                {{ Math.floor(danmakuData.density_bins[Math.floor(danmakuData.density_bins.length / 2)][0] / 60) }}min
+                {{ formatBinTime(danmakuData.density_bins[Math.floor(danmakuData.density_bins.length / 2)][0]) }}
               </span>
-              <span>
-                {{ Math.floor(danmakuData.density_bins[danmakuData.density_bins.length - 1][1] / 60) }}min
-              </span>
+              <span>{{ formatBinTime(danmakuData.density_bins[danmakuData.density_bins.length - 1][1]) }}</span>
             </div>
           </div>
 
