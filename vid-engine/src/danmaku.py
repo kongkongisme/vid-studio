@@ -61,13 +61,15 @@ class DanmakuProcessor:
         """通过 bvid 获取视频 cid（弹幕 XML 依赖此参数）"""
         url = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
         resp = requests.get(url, headers=self._HEADERS, timeout=10)
+        resp.raise_for_status()
         data = resp.json()
-        return data.get("data", {}).get("cid")
+        return (data.get("data") or {}).get("cid")
 
     def _fetch_xml(self, cid: int) -> List[DanmakuItem]:
         """下载并解析 B 站弹幕 XML，返回 DanmakuItem 列表"""
         url = f"https://comment.bilibili.com/{cid}.xml"
         resp = requests.get(url, headers=self._HEADERS, timeout=15)
+        resp.raise_for_status()
         resp.encoding = "utf-8"
         root = ET.fromstring(resp.text)
         items: List[DanmakuItem] = []
@@ -167,7 +169,7 @@ class DanmakuProcessor:
             ]
             if not bucket:
                 continue
-            # Top 5：先按 likes 降序，再按重复次数降序
+            # Top 5：按重复次数降序（B 站弹幕 XML 不含点赞数，YouTube 评论已按 like_count 排序传入）
             text_counts: Counter = Counter(i.text for i in bucket)
             top_texts = [t for t, _ in text_counts.most_common(5)]
             data.chunk_top[chunk.id_str] = top_texts[:3]
