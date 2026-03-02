@@ -435,11 +435,13 @@ function clearChat(confirm = false): void {
 // ─── Markdown 渲染 ────────────────────────────────────────
 
 // 时间戳格式匹配正则（用于 renderMarkdown 后处理）
-// 格式1：[MM:SS] 或 [HH:MM:SS]（方括号）
+// 格式1：[MM:SS-MM:SS] 时间范围（方括号），点击跳转起始时间
+const TS_BRACKET_RANGE_REGEX = /\[(\d{1,2}):(\d{2})(?::(\d{2}))?\s*[-–]\s*\d{1,2}:\d{2}(?::\d{2})?\]/g
+// 格式2：[MM:SS] 或 [HH:MM:SS] 单个时间点（方括号）
 const TS_BRACKET_REGEX = /\[(\d{1,2}):(\d{2})(?::(\d{2}))?\]/g
-// 格式2：（MM:SS-MM:SS）时间范围（全角括号），点击跳转起始时间
+// 格式3：（MM:SS-MM:SS）时间范围（全角括号），点击跳转起始时间
 const TS_WIDE_RANGE_REGEX = /（(\d{1,2}):(\d{2})(?::(\d{2}))?\s*[-–]\s*\d{1,2}:\d{2}(?::\d{2})?）/g
-// 格式3：（MM:SS）单个时间点（全角括号）
+// 格式4：（MM:SS）单个时间点（全角括号）
 const TS_WIDE_SINGLE_REGEX = /（(\d{1,2}):(\d{2})(?::(\d{2}))?）/g
 
 function parseSeconds(p1: string, p2: string, p3: string | undefined): number {
@@ -454,7 +456,7 @@ function renderMarkdown(content: string, streaming = false): string {
   let html = (marked.parse(content) as string).trim()
 
   // 将时间戳替换为可点击链接（跳过 <code>/<pre> 块）
-  // 支持：[MM:SS]、（MM:SS）、（MM:SS-MM:SS）格式
+  // 支持：[MM:SS]、[MM:SS-MM:SS]、（MM:SS）、（MM:SS-MM:SS）格式
   const tsReplacer = (match: string, p1: string, p2: string, p3: string | undefined): string => {
     const total = parseSeconds(p1, p2, p3)
     return `<a class="ts-link" data-seconds="${total}" href="#">${match}</a>`
@@ -464,6 +466,7 @@ function renderMarkdown(content: string, streaming = false): string {
     .map((part, i) => {
       if (i % 2 === 1) return part // 奇数索引是 code/pre 块，原样保留
       return part
+        .replace(TS_BRACKET_RANGE_REGEX, tsReplacer)
         .replace(TS_BRACKET_REGEX, tsReplacer)
         .replace(TS_WIDE_RANGE_REGEX, tsReplacer)
         .replace(TS_WIDE_SINGLE_REGEX, tsReplacer)
