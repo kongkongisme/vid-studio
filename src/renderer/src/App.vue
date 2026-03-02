@@ -148,7 +148,7 @@ const cookieYtBrowser = ref('')
 const isWebFullscreen = ref(false)
 
 // 右侧面板 tab
-const activeTab = ref<'timeline' | 'danmaku' | 'chat'>('timeline')
+const activeTab = ref<'timeline' | 'chat'>('timeline')
 const danmakuData = ref<DanmakuData | null>(null)
 
 // 对话状态
@@ -184,47 +184,6 @@ const cookieCombinedStatus = computed(() => {
 })
 
 // 弹幕词云数据：根据词频计算字体大小（12px ~ 32px）
-const danmakuWordCloudItems = computed(() => {
-  if (!danmakuData.value?.word_freq?.length) return []
-  const freq = danmakuData.value.word_freq
-  const maxCount = freq[0][1]
-  const minCount = freq[Math.min(freq.length - 1, 39)][1]
-  const range = maxCount - minCount || 1
-  const ROTATIONS = [1.2, -1.5, 0.8, -0.6, 1.8, -1.2, 0.4, -1.8, 1.0, -0.3, 1.5, -0.9, 0.7, -1.4, 0.2]
-  return freq.slice(0, 40).map(([word, count], index) => {
-    const ratio = (count - minCount) / range
-    return {
-      word,
-      count,
-      size: Math.round(11 + ratio * 19),
-      fontWeight: Math.round(400 + ratio * 400),
-      tier: index < 5 ? 1 : index < 15 ? 2 : index < 28 ? 3 : 4,
-      rotation: ROTATIONS[index % ROTATIONS.length],
-      index
-    }
-  })
-})
-
-// 弹幕密度热力图最大值（用于归一化柱高）
-const danmakuMaxBin = computed(() => {
-  if (!danmakuData.value?.density_bins?.length) return 1
-  return Math.max(...danmakuData.value.density_bins.map((b) => b[2])) || 1
-})
-
-
-/** 将秒数格式化为 M:SS 或 H:MM:SS，用于密度图 x 轴 */
-function formatBinTime(seconds: number): string {
-  if (seconds >= 3600) {
-    const h = Math.floor(seconds / 3600)
-    const m = Math.floor((seconds % 3600) / 60)
-    const s = Math.floor(seconds % 60)
-    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-  }
-  const m = Math.floor(seconds / 60)
-  const s = Math.floor(seconds % 60)
-  return `${m}:${String(s).padStart(2, '0')}`
-}
-
 // ─── 工具函数 ─────────────────────────────────────────────
 
 function timeToSeconds(time: string): number {
@@ -1439,18 +1398,6 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
             >{{ timelineChunks.length }}</span>
           </button>
 
-          <!-- 弹幕洞察 Tab 按钮（仅有弹幕数据时显示） -->
-          <button
-            v-if="danmakuData"
-            @click="activeTab = 'danmaku'"
-            class="flex items-center gap-1.5 px-4 py-2.5 text-sm border-b-2 transition-colors"
-            :class="activeTab === 'danmaku'
-              ? 'border-blue-500 text-blue-600 font-medium'
-              : 'border-transparent text-slate-400 hover:text-slate-600'"
-          >
-            弹幕洞察
-            <span class="ml-1 text-xs text-gray-400">{{ danmakuData.total_count }}</span>
-          </button>
 
           <button
             @click="activeTab = 'chat'"
@@ -1715,76 +1662,6 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
           </div>
         </div>
 
-        <!-- ── 弹幕洞察面板 ── -->
-        <div v-if="activeTab === 'danmaku'" class="flex-1 overflow-y-auto p-4 space-y-5">
-
-          <!-- 弹幕密度热力图（仅 B 站有时间轴数据） -->
-          <div v-if="danmakuData?.platform === 'bilibili' && danmakuData?.density_bins?.length">
-            <div class="flex items-center justify-between mb-2">
-              <span class="text-xs font-medium text-gray-600">弹幕密度</span>
-              <span class="text-xs text-gray-400">共 {{ danmakuData.total_count }} 条</span>
-            </div>
-            <div class="flex items-end gap-px h-16 bg-gray-50 rounded-lg p-2">
-              <div
-                v-for="(bin, i) in danmakuData.density_bins"
-                :key="i"
-                class="flex-1 min-w-[2px] max-w-[6px] rounded-sm transition-all cursor-pointer"
-                :style="{
-                  height: `${Math.max(4, Math.round((bin[2] / danmakuMaxBin) * 48))}px`,
-                  backgroundColor: `hsl(${210 - Math.round((bin[2] / danmakuMaxBin) * 150)}, 80%, ${65 - Math.round((bin[2] / danmakuMaxBin) * 25)}%)`
-                }"
-                :title="`${formatBinTime(bin[0])} — ${bin[2]} 条弹幕`"
-              />
-            </div>
-            <div class="flex justify-between text-xs text-gray-400 mt-1 px-2">
-              <span>0:00</span>
-              <span v-if="danmakuData.density_bins.length > 4">
-                {{ formatBinTime(danmakuData.density_bins[Math.floor(danmakuData.density_bins.length / 2)][0]) }}
-              </span>
-              <span>{{ formatBinTime(danmakuData.density_bins[danmakuData.density_bins.length - 1][1]) }}</span>
-            </div>
-          </div>
-
-          <!-- YouTube 无时间轴提示 -->
-          <div v-else-if="danmakuData?.platform === 'youtube'" class="text-xs text-gray-400 text-center py-2">
-            YouTube 评论无时间轴信息，仅展示高频词
-          </div>
-
-          <!-- 高频词词云 -->
-          <div v-if="danmakuWordCloudItems.length" class="dm-cloud-section">
-            <div class="dm-cloud-header">
-              <span class="dm-cloud-label">高频词</span>
-              <span class="dm-cloud-meta">TOP {{ Math.min(danmakuData?.word_freq?.length ?? 0, 40) }}</span>
-            </div>
-            <div class="dm-cloud-canvas">
-              <span
-                v-for="(item, i) in danmakuWordCloudItems"
-                :key="item.word"
-                class="dm-word"
-                :class="`dm-word--t${item.tier}`"
-                :style="{
-                  fontSize: `${item.size}px`,
-                  fontWeight: item.fontWeight,
-                  '--rot': `${item.rotation}deg`,
-                  animationDelay: `${Math.min(i * 25, 600)}ms`
-                }"
-                :title="`${item.word}  ×${item.count}`"
-              >{{ item.word }}</span>
-              <span class="dm-blob dm-blob--a" aria-hidden="true" />
-              <span class="dm-blob dm-blob--b" aria-hidden="true" />
-            </div>
-            <div class="dm-cloud-legend">按词频着色 · hover 查看次数</div>
-          </div>
-
-          <!-- 空状态 -->
-          <div
-            v-if="!danmakuWordCloudItems.length && !danmakuData?.density_bins?.length"
-            class="text-center text-sm text-gray-400 py-8"
-          >
-            暂无弹幕数据
-          </div>
-        </div>
-
         <!-- ── 对话面板 ── -->
         <div v-show="activeTab === 'chat'" class="flex-1 flex flex-col overflow-hidden">
 
@@ -2036,50 +1913,6 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
 .markdown-body th { background: rgba(0, 0, 0, 0.04); font-weight: 600; }
 .markdown-body strong { font-weight: 600; }
 .markdown-body em { font-style: italic; }
-
-/* ── 弹幕词云 ────────────────────────────────────────────── */
-.dm-cloud-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-.dm-cloud-label { font-size: 0.70rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b; }
-.dm-cloud-meta { font-size: 0.68rem; color: #94a3b8; font-feature-settings: 'tnum'; }
-.dm-cloud-canvas {
-  background: linear-gradient(145deg, #0f172a 0%, #131c2e 60%, #111827 100%);
-  border-radius: 14px;
-  padding: 18px 16px 16px;
-  min-height: 120px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px 10px;
-  align-items: center;
-  position: relative;
-  overflow: hidden;
-  border: 1px solid rgba(255,255,255,0.04);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 4px 20px rgba(0,0,0,0.25);
-}
-.dm-blob { position: absolute; border-radius: 50%; pointer-events: none; filter: blur(32px); }
-.dm-blob--a { width: 110px; height: 80px; background: rgba(249,115,22,0.12); top: -20px; left: 8%; }
-.dm-blob--b { width: 90px; height: 65px; background: rgba(56,189,248,0.09); bottom: -15px; right: 12%; }
-.dm-word {
-  display: inline-block;
-  line-height: 1.45;
-  cursor: default;
-  user-select: none;
-  rotate: var(--rot, 0deg);
-  transition: scale 0.22s cubic-bezier(0.34,1.56,0.64,1), rotate 0.25s ease, filter 0.15s ease;
-  opacity: 0;
-  animation: dmWordIn 0.45s ease forwards;
-  position: relative;
-  z-index: 1;
-}
-.dm-word:hover { scale: 1.18; rotate: 0deg; filter: brightness(1.3); z-index: 10; }
-@keyframes dmWordIn {
-  from { opacity: 0; transform: translateY(6px) scale(0.82); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
-}
-.dm-word--t1 { color: #f97316; text-shadow: 0 0 10px rgba(249,115,22,0.5); }
-.dm-word--t2 { color: #fb923c; }
-.dm-word--t3 { color: #38bdf8; }
-.dm-word--t4 { color: #64748b; }
-.dm-cloud-legend { margin-top: 7px; font-size: 0.62rem; color: #94a3b8; text-align: right; }
 
 /* 流式光标 */
 .md-cursor { animation: md-cursor-blink 0.8s step-end infinite; }
