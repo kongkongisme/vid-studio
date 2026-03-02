@@ -230,7 +230,7 @@ function parseMarkdown(md: string): TimelineChunk[] {
   }
 
   for (const line of lines) {
-    const hm = line.match(/^## (\d{1,2}:\d{2}) - (\d{1,2}:\d{2}) \| (.+)$/)
+    const hm = line.match(/^## (\d{1,2}:\d{2}(?::\d{2})?) - (\d{1,2}:\d{2}(?::\d{2})?) \| (.+)$/)
     if (hm) {
       flush()
       cur = {
@@ -282,7 +282,7 @@ function parseMarkdown(md: string): TimelineChunk[] {
       continue
     }
     if (inTranscript) {
-      const lm = line.match(/^\[(\d{1,2}:\d{2})\]\s+(.+)$/)
+      const lm = line.match(/^\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s+(.+)$/)
       if (lm) {
         cur.transcript!.push({
           time: lm[1],
@@ -433,14 +433,20 @@ function autoResizeTextarea(e: Event): void {
 }
 
 function buildSystemPrompt(): string {
+  const now = new Date()
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const dateStr = now.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', timeZone })
+  const timeStr = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', timeZone })
+  const currentTime = `当前时间：${dateStr} ${timeStr}（${timeZone}）`
+
   if (!timelineChunks.value.length) {
-    return '你是一个视频内容助手，帮助用户理解和分析视频内容。请用中文简洁回答。'
+    return `你是一个视频内容助手，帮助用户理解和分析视频内容。${currentTime}。请用中文简洁回答。`
   }
   const chunks = timelineChunks.value
   const chunkSummaries = chunks
     .map((c) => `[${c.startTime}-${c.endTime}] ${c.title}：${c.summary}`)
     .join('\n')
-  return `你是一个视频内容助手，帮助用户理解和分析当前视频内容。
+  return `你是一个视频内容助手，帮助用户理解和分析当前视频内容。${currentTime}。
 
 视频时间轴（共 ${chunks.length} 个片段）：
 ${chunkSummaries}
@@ -725,12 +731,10 @@ function applyExtractedUrl(text: string): string {
 }
 
 function handleUrlPaste(e: ClipboardEvent): void {
-  const text = e.clipboardData?.getData('text') ?? ''
-  const extracted = applyExtractedUrl(text)
-  if (extracted !== text.trim()) {
-    e.preventDefault()
-    url.value = extracted
-  }
+  e.preventDefault()
+  const text = e.clipboardData?.getData('text/plain') ?? ''
+  if (!text) return
+  url.value = applyExtractedUrl(text)
 }
 
 // ─── 剪贴板快速解析 ───────────────────────────────────────
