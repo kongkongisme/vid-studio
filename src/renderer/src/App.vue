@@ -4,6 +4,7 @@ import {
   type Platform,
   detectPlatform,
   extractVideoId,
+  extractUrlFromText,
   validateUrl,
   getWebviewUrl,
   getWebviewSession,
@@ -67,6 +68,15 @@ interface ChatMessage {
   content: string
   quotedChunk?: TimelineChunk
   streaming?: boolean
+  searchQuery?: string  // LLM 触发 Tavily 搜索时记录的关键词
+}
+
+interface DanmakuData {
+  platform: string
+  total_count: number
+  word_freq: [string, number][]
+  density_bins: [number, number, number][]
+  chunk_top: Record<string, string[]>
 }
 
 // ─── 应用版本 ─────────────────────────────────────────────
@@ -78,6 +88,7 @@ const appVersion = __APP_VERSION__
 const url = ref('')
 const loading = ref(false)
 const errorMsg = ref('')
+const urlExtractedHint = ref(false)
 const videoId = ref('')
 const currentPlatform = ref<Platform | null>(null)
 const videoUrl = ref('')
@@ -137,7 +148,8 @@ const cookieYtBrowser = ref('')
 const isWebFullscreen = ref(false)
 
 // 右侧面板 tab
-const activeTab = ref<'timeline' | 'chat'>('timeline')
+const activeTab = ref<'timeline' | 'danmaku' | 'chat'>('timeline')
+const danmakuData = ref<DanmakuData | null>(null)
 
 // 对话状态
 const chatMessages = ref<ChatMessage[]>([])
@@ -169,6 +181,26 @@ const cookieCombinedStatus = computed(() => {
   if (cookieStatus.value === 'ok' && cookieYtStatus.value === 'ok') return 'ok'
   if (cookieStatus.value === 'fail' || cookieYtStatus.value === 'fail') return 'warn'
   return 'idle'
+})
+
+// 弹幕词云数据：根据词频计算字体大小（12px ~ 32px）
+const danmakuWordCloudItems = computed(() => {
+  if (!danmakuData.value?.word_freq?.length) return []
+  const freq = danmakuData.value.word_freq
+  const maxCount = freq[0][1]
+  const minCount = freq[freq.length - 1][1]
+  const range = maxCount - minCount || 1
+  return freq.slice(0, 40).map(([word, count]) => ({
+    word,
+    count,
+    size: Math.round(12 + ((count - minCount) / range) * 20)
+  }))
+})
+
+// 弹幕密度热力图最大值（用于归一化柱高）
+const danmakuMaxBin = computed(() => {
+  if (!danmakuData.value?.density_bins?.length) return 1
+  return Math.max(...danmakuData.value.density_bins.map((b) => b[2])) || 1
 })
 
 
@@ -413,7 +445,7 @@ function buildSystemPrompt(): string {
 视频时间轴（共 ${chunks.length} 个片段）：
 ${chunkSummaries}
 
-请基于以上视频内容回答用户的问题，可以引用时间戳。如用户引用了特定片段，优先围绕该片段展开分析。回答请用中文，保持简洁准确。`
+回答优先级：① 优先使用视频内容和时间轴 → ② 补充你已有的知识 → ③ 仅当前两者不足以回答（需要实时数据或明确超出已知范围的事实）时，才使用搜索工具。如用户引用了特定片段，优先围绕该片段展开分析。回答请用中文，保持简洁准确。`
 }
 
 // ─── 对话：引用片段 ───────────────────────────────────────
@@ -562,6 +594,11 @@ async function sendChat(): Promise<void> {
     }
   })
 
+  // 订阅搜索事件，记录关键词到消息（用于展示搜索徽章）
+  const unsubscribeSearch = window.api.onChatSearchQuery((query) => {
+    chatMessages.value[assistantIdx].searchQuery = query
+  })
+
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if (typeof (window.api as any).chatWithVideo !== 'function') {
@@ -578,6 +615,7 @@ async function sendChat(): Promise<void> {
     }
   } finally {
     unsubscribeStream()
+    unsubscribeSearch()
     chatMessages.value[assistantIdx].streaming = false
     chatLoading.value = false
     await scrollChatToBottom()
@@ -598,6 +636,7 @@ async function parseVideo(): Promise<void> {
   errorMsg.value = ''
   progressLog.value = []
   timelineChunks.value = []
+  danmakuData.value = null
   activeChunkId.value = ''
   expandedIds.value = []
   expandedCardIds.value = []
@@ -626,6 +665,7 @@ async function parseVideo(): Promise<void> {
     const result = await window.api.parseVideo(videoUrl.value, { skipVideo: skipVideo.value })
     if (result.success && result.output) {
       timelineChunks.value = parseMarkdown(result.output)
+      danmakuData.value = result.danmaku ?? null
       // 保存到历史记录
       await saveHistory(result.output)
     } else {
@@ -646,6 +686,31 @@ async function stopParse(): Promise<void> {
   loading.value = false
 }
 
+// ─── 从文本中提取链接（供粘贴时调用）─────────────────────
+
+function applyExtractedUrl(text: string): string {
+  const trimmed = text.trim()
+  if (!validateUrl(trimmed)) return trimmed // 本身就是合法链接
+  const extracted = extractUrlFromText(trimmed)
+  if (extracted && !validateUrl(extracted)) {
+    urlExtractedHint.value = true
+    setTimeout(() => {
+      urlExtractedHint.value = false
+    }, 3000)
+    return extracted
+  }
+  return trimmed
+}
+
+function handleUrlPaste(e: ClipboardEvent): void {
+  const text = e.clipboardData?.getData('text') ?? ''
+  const extracted = applyExtractedUrl(text)
+  if (extracted !== text.trim()) {
+    e.preventDefault()
+    url.value = extracted
+  }
+}
+
 // ─── 剪贴板快速解析 ───────────────────────────────────────
 
 async function pasteAndParse(): Promise<void> {
@@ -656,12 +721,13 @@ async function pasteAndParse(): Promise<void> {
     errorMsg.value = '无法读取剪贴板，请手动粘贴链接'
     return
   }
-  const validationError = validateUrl(text)
+  const extracted = applyExtractedUrl(text)
+  const validationError = validateUrl(extracted)
   if (validationError) {
     errorMsg.value = validationError
     return
   }
-  url.value = text.trim()
+  url.value = extracted
   await parseVideo()
 }
 
@@ -1051,7 +1117,12 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
           placeholder="粘贴 B 站 / YouTube 视频链接..."
           class="flex-1 bg-transparent outline-none text-sm text-slate-800 placeholder:text-slate-400"
           @keydown.enter="parseVideo"
+          @paste="handleUrlPaste"
         />
+        <span
+          v-if="urlExtractedHint"
+          class="shrink-0 text-xs text-blue-500 whitespace-nowrap"
+        >已自动提取链接</span>
       </div>
 
       <!-- 解析模式选择器 -->
@@ -1317,6 +1388,19 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
             >{{ timelineChunks.length }}</span>
           </button>
 
+          <!-- 弹幕洞察 Tab 按钮（仅有弹幕数据时显示） -->
+          <button
+            v-if="danmakuData"
+            @click="activeTab = 'danmaku'"
+            class="flex items-center gap-1.5 px-4 py-2.5 text-sm border-b-2 transition-colors"
+            :class="activeTab === 'danmaku'
+              ? 'border-blue-500 text-blue-600 font-medium'
+              : 'border-transparent text-slate-400 hover:text-slate-600'"
+          >
+            弹幕洞察
+            <span class="ml-1 text-xs text-gray-400">{{ danmakuData.total_count }}</span>
+          </button>
+
           <button
             @click="activeTab = 'chat'"
             class="flex items-center gap-1.5 px-4 py-2.5 text-sm border-b-2 transition-colors"
@@ -1528,6 +1612,24 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
                   </div>
                 </div>
 
+                <!-- 弹幕反应（有弹幕数据时显示） -->
+                <div
+                  v-if="danmakuData?.chunk_top?.[chunk.id]?.length"
+                  class="mt-3 pt-3 border-t border-gray-100"
+                >
+                  <div class="text-xs font-medium text-gray-400 mb-1.5">弹幕反应</div>
+                  <div class="space-y-1">
+                    <div
+                      v-for="(dm, i) in danmakuData.chunk_top[chunk.id]"
+                      :key="i"
+                      class="flex items-start gap-1.5 text-xs text-gray-500"
+                    >
+                      <span class="flex-shrink-0 mt-0.5">💬</span>
+                      <span>{{ dm }}</span>
+                    </div>
+                  </div>
+                </div>
+
                 <!-- 原文记录折叠 -->
                 <div v-if="chunk.transcript.length">
                   <button
@@ -1559,6 +1661,66 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+
+        <!-- ── 弹幕洞察面板 ── -->
+        <div v-if="activeTab === 'danmaku'" class="flex-1 overflow-y-auto p-4 space-y-5">
+
+          <!-- 弹幕密度热力图（仅 B 站有时间轴数据） -->
+          <div v-if="danmakuData?.platform === 'bilibili' && danmakuData?.density_bins?.length">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-xs font-medium text-gray-600">弹幕密度</span>
+              <span class="text-xs text-gray-400">共 {{ danmakuData.total_count }} 条</span>
+            </div>
+            <div class="flex items-end gap-px h-16 bg-gray-50 rounded-lg p-2 overflow-x-auto">
+              <div
+                v-for="(bin, i) in danmakuData.density_bins"
+                :key="i"
+                class="flex-shrink-0 w-1.5 rounded-sm transition-all cursor-pointer"
+                :style="{
+                  height: `${Math.max(4, Math.round((bin[2] / danmakuMaxBin) * 48))}px`,
+                  backgroundColor: `hsl(${210 - Math.round((bin[2] / danmakuMaxBin) * 150)}, 80%, ${65 - Math.round((bin[2] / danmakuMaxBin) * 25)}%)`
+                }"
+                :title="`${Math.floor(bin[0] / 60)}:${String(Math.floor(bin[0] % 60)).padStart(2, '0')} — ${bin[2]} 条弹幕`"
+              />
+            </div>
+            <div class="flex justify-between text-xs text-gray-400 mt-1 px-2">
+              <span>0:00</span>
+              <span v-if="danmakuData.density_bins.length > 4">
+                {{ Math.floor(danmakuData.density_bins[Math.floor(danmakuData.density_bins.length / 2)][0] / 60) }}min
+              </span>
+              <span>
+                {{ Math.floor(danmakuData.density_bins[danmakuData.density_bins.length - 1][1] / 60) }}min
+              </span>
+            </div>
+          </div>
+
+          <!-- YouTube 无时间轴提示 -->
+          <div v-else-if="danmakuData?.platform === 'youtube'" class="text-xs text-gray-400 text-center py-2">
+            YouTube 评论无时间轴信息，仅展示高频词
+          </div>
+
+          <!-- 高频词词云 -->
+          <div v-if="danmakuWordCloudItems.length">
+            <div class="text-xs font-medium text-gray-600 mb-2">高频词</div>
+            <div class="flex flex-wrap gap-2 p-3 bg-gray-50 rounded-lg min-h-[80px]">
+              <span
+                v-for="item in danmakuWordCloudItems"
+                :key="item.word"
+                class="text-gray-700 cursor-default select-none transition-colors hover:text-blue-600"
+                :style="{ fontSize: `${item.size}px`, lineHeight: '1.4' }"
+                :title="`出现 ${item.count} 次`"
+              >{{ item.word }}</span>
+            </div>
+          </div>
+
+          <!-- 空状态 -->
+          <div
+            v-if="!danmakuWordCloudItems.length && !danmakuData?.density_bins?.length"
+            class="text-center text-sm text-gray-400 py-8"
+          >
+            暂无弹幕数据
           </div>
         </div>
 
@@ -1634,19 +1796,31 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
                   v-else
                   class="px-3 py-2 text-sm bg-white text-slate-700 border border-slate-200 rounded-2xl rounded-tl-sm"
                 >
-                  <!-- 等待第一个 chunk 时显示三点动画 -->
+                  <!-- 等待第一个 chunk 时显示三点动画（或搜索中状态） -->
                   <div v-if="msg.streaming && !msg.content" class="flex items-center gap-1.5 py-0.5">
-                    <div class="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce [animation-delay:0ms]" />
-                    <div class="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce [animation-delay:150ms]" />
-                    <div class="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce [animation-delay:300ms]" />
+                    <template v-if="msg.searchQuery">
+                      <IconSearch class="w-3 h-3 text-amber-400 shrink-0" />
+                      <span class="text-xs text-amber-500">正在搜索 <span class="font-medium">{{ msg.searchQuery }}</span>…</span>
+                    </template>
+                    <template v-else>
+                      <div class="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce [animation-delay:0ms]" />
+                      <div class="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce [animation-delay:150ms]" />
+                      <div class="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce [animation-delay:300ms]" />
+                    </template>
                   </div>
                   <!-- 有内容时渲染 Markdown（流式状态带光标） -->
-                  <div
-                    v-else
-                    class="markdown-body select-text"
-                    v-html="renderMarkdown(msg.content, msg.streaming)"
-                    @click="handleMarkdownClick"
-                  />
+                  <template v-else>
+                    <!-- 搜索来源徽章（搜索完成后常驻显示） -->
+                    <div v-if="msg.searchQuery" class="flex items-center gap-1 mb-2 text-[11px] text-amber-600/80">
+                      <IconSearch class="w-3 h-3 shrink-0" />
+                      <span>已联网搜索：{{ msg.searchQuery }}</span>
+                    </div>
+                    <div
+                      class="markdown-body select-text"
+                      v-html="renderMarkdown(msg.content, msg.streaming)"
+                      @click="handleMarkdownClick"
+                    />
+                  </template>
                 </div>
               </div>
             </div>

@@ -2,6 +2,14 @@
 
 declare const __APP_VERSION__: string
 
+interface DanmakuData {
+  platform: string
+  total_count: number
+  word_freq: [string, number][]
+  density_bins: [number, number, number][]
+  chunk_top: Record<string, string[]>
+}
+
 interface HistoryItem {
   id: string
   url: string
@@ -33,12 +41,13 @@ interface Window {
     parseVideo: (
       url: string,
       options?: { skipVideo?: boolean }
-    ) => Promise<{ success: boolean; output?: string; error?: string }>
+    ) => Promise<{ success: boolean; output?: string; danmaku?: DanmakuData | null; error?: string }>
     onParseProgress: (callback: (line: string) => void) => () => void
     chatWithVideo: (
       messages: { role: string; content: string }[]
     ) => Promise<{ success: boolean; error?: string }>
     onChatStreamChunk: (callback: (delta: string) => void) => () => void
+    onChatSearchQuery: (callback: (query: string) => void) => () => void
     // 历史管理
     getHistory: () => Promise<HistoryItem[]>
     addHistory: (item: Omit<HistoryItem, 'id' | 'createdAt'>) => Promise<void>
