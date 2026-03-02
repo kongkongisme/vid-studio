@@ -1711,7 +1711,7 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
                   height: `${Math.max(4, Math.round((bin[2] / danmakuMaxBin) * 48))}px`,
                   backgroundColor: `hsl(${210 - Math.round((bin[2] / danmakuMaxBin) * 150)}, 80%, ${65 - Math.round((bin[2] / danmakuMaxBin) * 25)}%)`
                 }"
-                :title="`${Math.floor(bin[0] / 60)}:${String(Math.floor(bin[0] % 60)).padStart(2, '0')} — ${bin[2]} 条弹幕`"
+                :title="`${bin[0] >= 3600 ? Math.floor(bin[0] / 3600) + ':' + String(Math.floor((bin[0] % 3600) / 60)).padStart(2, '0') : Math.floor(bin[0] / 60)}:${String(Math.floor(bin[0] % 60)).padStart(2, '0')} — ${bin[2]} 条弹幕`"
               />
             </div>
             <div class="flex justify-between text-xs text-gray-400 mt-1 px-2">
