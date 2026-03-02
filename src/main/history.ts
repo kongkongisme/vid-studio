@@ -36,10 +36,14 @@ export async function addHistory(item: Omit<HistoryItem, 'id' | 'createdAt'>): P
   const history = await getHistory()
   console.log('[history] 当前历史记录数:', history.length)
 
+  // 如果已有相同 URL 的记录，保留其稳定字段，避免重新解析时覆盖标题和 favorited
+  const existing = history.find((h) => h.url === item.url)
   const newItem: HistoryItem = {
     ...item,
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    createdAt: Date.now()
+    id: existing?.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: existing?.createdAt ?? Date.now(),
+    title: existing?.title ?? item.title,
+    favorited: existing?.favorited ?? item.favorited
   }
 
   // 去重：相同 URL 替换旧的

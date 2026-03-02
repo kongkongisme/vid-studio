@@ -235,11 +235,19 @@ ipcMain.handle('stop-parse', () => {
   }
 })
 
-// ─── IPC：LLM 对话（流式） ────────────────────────────────
+// ─── IPC：LLM 对话（流式，支持 Tavily 互联网搜索工具） ────
 
 interface ApiChatMessage {
   role: string
   content: string
+}
+
+// 内部消息类型，支持 tool_calls / tool role
+interface InternalMessage {
+  role: string
+  content: string | null
+  tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[]
+  tool_call_id?: string
 }
 
 ipcMain.handle('chat-with-video', async (event, messages: ApiChatMessage[]) => {
@@ -248,28 +256,66 @@ ipcMain.handle('chat-with-video', async (event, messages: ApiChatMessage[]) => {
     return { success: false, error: '未配置 DEEPSEEK_API_KEY，请在 vid-engine/.env 中设置' }
   }
 
-  try {
+  const tavilyKey = await readEnvKey('TAVILY_API_KEY')
+
+  // 工具定义（仅在配置了 Tavily API Key 时启用）
+  const tools = tavilyKey
+    ? [
+        {
+          type: 'function',
+          function: {
+            name: 'web_search',
+            description:
+              '搜索互联网获取实时信息。仅当以下情况才调用：(1) 需要视频发布后的最新动态；(2) 需要具体数字/日期/事实且无法从视频内容或已有知识确认；(3) 用户明确要求搜索。若视频内容或模型已有知识已足够回答，不得调用此工具。',
+            parameters: {
+              type: 'object',
+              properties: {
+                query: { type: 'string', description: '搜索关键词' }
+              },
+              required: ['query']
+            }
+          }
+        }
+      ]
+    : null
+
+  // 流式调用 DeepSeek，同时检测工具调用
+  const streamLLM = async (
+    msgs: InternalMessage[],
+    noTools = false
+  ): Promise<{ content: string; toolCall?: { id: string; name: string; args: string } }> => {
+    const body: Record<string, unknown> = {
+      model: 'deepseek-chat',
+      messages: msgs,
+      temperature: 0.7,
+      max_tokens: 2000,
+      stream: true
+    }
+    if (tools && !noTools) {
+      body.tools = tools
+      body.tool_choice = 'auto'
+    }
+
     const response = await fetch('https://api.deepseek.com/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: 'deepseek-chat',
-        messages,
-        temperature: 0.7,
-        max_tokens: 2000,
-        stream: true
-      })
+      body: JSON.stringify(body)
     })
 
     if (!response.ok) {
-      return { success: false, error: `API 错误: ${response.status} ${await response.text()}` }
+      throw new Error(`API 错误: ${response.status} ${await response.text()}`)
     }
 
     const reader = response.body?.getReader()
-    if (!reader) return { success: false, error: '无法读取响应流' }
+    if (!reader) throw new Error('无法读取响应流')
 
     const decoder = new TextDecoder()
     let buffer = ''
+    let content = ''
+    let toolCallId = ''
+    let toolCallName = ''
+    let toolCallArgs = ''
+    let finishReason = ''
 
     while (true) {
       const { done, value } = await reader.read()
@@ -285,14 +331,116 @@ ipcMain.handle('chat-with-video', async (event, messages: ApiChatMessage[]) => {
         if (data === '[DONE]') continue
         try {
           const parsed = JSON.parse(data) as {
-            choices: { delta: { content?: string }; finish_reason: string | null }[]
+            choices: {
+              delta: {
+                content?: string
+                tool_calls?: {
+                  index: number
+                  id?: string
+                  function?: { name?: string; arguments?: string }
+                }[]
+              }
+              finish_reason: string | null
+            }[]
           }
-          const delta = parsed.choices[0]?.delta?.content
-          if (delta) event.sender.send('chat-stream-chunk', delta)
+          const choice = parsed.choices[0]
+          if (!choice) continue
+          if (choice.finish_reason) finishReason = choice.finish_reason
+          const delta = choice.delta
+          if (delta.content) {
+            content += delta.content
+            event.sender.send('chat-stream-chunk', delta.content)
+          }
+          const tc = delta.tool_calls?.[0]
+          if (tc) {
+            if (tc.id) toolCallId = tc.id
+            if (tc.function?.name) toolCallName += tc.function.name
+            if (tc.function?.arguments) toolCallArgs += tc.function.arguments
+          }
         } catch {
           // 跳过解析失败的行
         }
       }
+    }
+
+    if (finishReason === 'tool_calls' && toolCallName) {
+      return { content, toolCall: { id: toolCallId, name: toolCallName, args: toolCallArgs } }
+    }
+    return { content }
+  }
+
+  try {
+    const internalMessages: InternalMessage[] = messages.map((m) => ({
+      role: m.role,
+      content: m.content
+    }))
+
+    // 第一轮：LLM 响应（配置了 Tavily 时携带工具定义）
+    const phase1 = await streamLLM(internalMessages)
+
+    if (!phase1.toolCall) {
+      // 无工具调用，直接结束
+      return { success: true }
+    }
+
+    // 处理 web_search 工具调用
+    const { id, name, args } = phase1.toolCall
+    if (name === 'web_search' && tavilyKey) {
+      let searchResult = '搜索未返回有效结果'
+      try {
+        const parsedArgs = JSON.parse(args) as { query: string }
+        const query = parsedArgs.query
+
+        // 通知渲染层搜索关键词（独立事件，不污染消息正文）
+        event.sender.send('chat-search-query', query)
+
+        const tavilyResp = await fetch('https://api.tavily.com/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            api_key: tavilyKey,
+            query,
+            search_depth: 'basic',
+            max_results: 5,
+            include_answer: true
+          })
+        })
+
+        if (tavilyResp.ok) {
+          const tavilyData = (await tavilyResp.json()) as {
+            answer?: string
+            results?: { title: string; url: string; content: string }[]
+          }
+          const parts: string[] = []
+          if (tavilyData.answer) parts.push(`摘要：${tavilyData.answer}`)
+          if (tavilyData.results?.length) {
+            parts.push(
+              tavilyData.results
+                .map((r) => `标题：${r.title}\n链接：${r.url}\n内容：${r.content}`)
+                .join('\n---\n')
+            )
+          }
+          searchResult = parts.join('\n\n') || searchResult
+        } else {
+          searchResult = `搜索请求失败（HTTP ${tavilyResp.status}）`
+        }
+      } catch (e) {
+        searchResult = `搜索出错：${String(e)}`
+      }
+
+      // 组装含工具结果的消息，发起第二轮对话
+      const msgsWithTool: InternalMessage[] = [
+        ...internalMessages,
+        {
+          role: 'assistant',
+          content: phase1.content || null,
+          tool_calls: [{ id, type: 'function', function: { name, arguments: args } }]
+        },
+        { role: 'tool', content: searchResult, tool_call_id: id }
+      ]
+
+      // noTools=true，避免第二轮再次触发搜索
+      await streamLLM(msgsWithTool, true)
     }
 
     return { success: true }
@@ -350,7 +498,8 @@ ipcMain.handle('read-file', async (_, filePath: string) => {
 ipcMain.handle('get-cache', (_, url: string) => {
   try {
     return getCachedContent(url)
-  } catch {
+  } catch (e) {
+    console.error('[main] get-cache 失败:', e)
     return null
   }
 })
@@ -366,15 +515,16 @@ ipcMain.handle('set-cache', (_, url: string, content: string) => {
 ipcMain.handle('delete-cache', (_, url: string) => {
   try {
     deleteCachedContent(url)
-  } catch {
-    // 静默失败
+  } catch (e) {
+    console.error('[main] delete-cache 失败:', e)
   }
 })
 
 ipcMain.handle('get-cached-urls', () => {
   try {
     return getCachedUrls()
-  } catch {
+  } catch (e) {
+    console.error('[main] get-cached-urls 失败:', e)
     return []
   }
 })
