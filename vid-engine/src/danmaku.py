@@ -91,9 +91,10 @@ class DanmakuProcessor:
         """从 yt-dlp comments 列表构建弹幕数据（无时间戳，start 统一为 -1）"""
         if not comments:
             return None
+        # 上游 downloader.py 已通过 max_comments=100 限制数量，此处无需再切片
         items = [
             DanmakuItem(start=-1, text=c.get("text", "").strip(), likes=c.get("like_count", 0))
-            for c in comments[:2000]
+            for c in comments
             if c.get("text", "").strip()
         ]
         if not items:
