@@ -182,6 +182,7 @@ ipcMain.handle('import-youtube-cookies', async () => {
 // ─── IPC：解析视频 ────────────────────────────────────────
 interface ParseOptions {
   skipVideo?: boolean
+  skipDanmaku?: boolean
 }
 
 // 弹幕数据结构
@@ -200,6 +201,7 @@ ipcMain.handle('parse-video', async (event, url: string, options: ParseOptions =
   const outputPath = join(tmpdir(), `vid-studio-${Date.now()}.txt`)
   const args = ['main.py', url, '-o', outputPath]
   if (options.skipVideo !== false) args.push('--skip-video')
+  if (options.skipDanmaku) args.push('--skip-danmaku')
 
   return new Promise<{ success: boolean; output?: string; danmaku?: DanmakuData | null; error?: string }>((resolve) => {
     const proc = spawn(pythonBin, args, { cwd: vidEnginePath, env: buildSpawnEnv() })
@@ -283,7 +285,7 @@ ipcMain.handle('chat-with-video', async (event, messages: ApiChatMessage[]) => {
           function: {
             name: 'web_search',
             description:
-              '搜索互联网获取实时信息。仅当以下情况才调用：(1) 需要视频发布后的最新动态；(2) 需要具体数字/日期/事实且无法从视频内容或已有知识确认；(3) 用户明确要求搜索。若视频内容或模型已有知识已足够回答，不得调用此工具。',
+              '搜索互联网获取实时信息。仅当以下情况才调用：(1) 需要视频发布后的最新动态；(2) 需要具体数字/日期/事实且无法从视频内容或已有知识确认；(3) 用户明确要求搜索。若视频内容或模型已有知识已足够回答，不得调用此工具。判断需要搜索时直接调用，不要询问用户。',
             parameters: {
               type: 'object',
               properties: {

@@ -3,6 +3,7 @@ import { electronAPI } from '@electron-toolkit/preload'
 
 interface ParseOptions {
   skipVideo?: boolean
+  skipDanmaku?: boolean
 }
 
 interface DanmakuData {

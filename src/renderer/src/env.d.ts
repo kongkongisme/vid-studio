@@ -40,7 +40,7 @@ interface Window {
     }>
     parseVideo: (
       url: string,
-      options?: { skipVideo?: boolean }
+      options?: { skipVideo?: boolean; skipDanmaku?: boolean }
     ) => Promise<{ success: boolean; output?: string; danmaku?: DanmakuData | null; error?: string }>
     onParseProgress: (callback: (line: string) => void) => () => void
     chatWithVideo: (
