@@ -445,7 +445,7 @@ function buildSystemPrompt(): string {
 视频时间轴（共 ${chunks.length} 个片段）：
 ${chunkSummaries}
 
-回答优先级：① 优先使用视频内容和时间轴 → ② 补充你已有的知识 → ③ 仅当前两者不足以回答（需要实时数据或明确超出已知范围的事实）时，才使用搜索工具。如用户引用了特定片段，优先围绕该片段展开分析。回答请用中文，保持简洁准确。`
+回答优先级：① 优先使用视频内容和时间轴 → ② 补充你已有的知识 → ③ 仅当前两者不足以回答（需要实时数据或明确超出已知范围的事实）时，才使用搜索工具。如用户引用了特定片段，优先围绕该片段展开分析。需要搜索时直接调用工具，不要询问用户是否需要搜索。回答请用中文，保持简洁准确。`
 }
 
 // ─── 对话：引用片段 ───────────────────────────────────────
@@ -483,9 +483,20 @@ function parseSeconds(p1: string, p2: string, p3: string | undefined): number {
   return hours * 3600 + minutes * 60 + seconds
 }
 
+// 搜索来源标记的内联 HTML（内嵌于 markdown 内容流中）
+const SEARCH_BADGE_HTML = (query: string) =>
+  `<div style="display:flex;align-items:center;gap:6px;margin:10px 0;font-size:11px;color:#b45309;opacity:0.75">` +
+  `<div style="flex:1;height:1px;background:#fde68a"></div>` +
+  `<span style="white-space:nowrap;font-weight:500">🔍 已联网搜索：${query}</span>` +
+  `<div style="flex:1;height:1px;background:#fde68a"></div>` +
+  `</div>`
+
 function renderMarkdown(content: string, streaming = false): string {
   if (!content) return ''
   let html = (marked.parse(content) as string).trim()
+
+  // 将搜索标记（HTML 注释）替换为内联分隔徽章
+  html = html.replace(/<!-- SEARCH_BADGE:(.*?) -->/g, (_, query) => SEARCH_BADGE_HTML(query))
 
   // 将时间戳替换为可点击链接（跳过 <code>/<pre> 块）
   // 支持：[MM:SS]、[MM:SS-MM:SS]、（MM:SS）、（MM:SS-MM:SS）格式
@@ -583,9 +594,18 @@ async function sendChat(): Promise<void> {
   const assistantIdx = chatMessages.value.length - 1
   await scrollChatToBottom()
 
+  // 首次收到 Phase 2 chunk 时将搜索徽章注入到内容边界处
+  let searchBadgeInjected = false
+
   // 订阅流式 chunk，接近底部时自动跟随滚动
   const unsubscribeStream = window.api.onChatStreamChunk((delta) => {
-    chatMessages.value[assistantIdx].content += delta
+    const msg = chatMessages.value[assistantIdx]
+    // Phase 2 第一个 chunk 到达：将徽章标记插入 Phase1/Phase2 边界
+    if (msg.searchQuery && !searchBadgeInjected) {
+      msg.content += `<!-- SEARCH_BADGE:${msg.searchQuery} -->`
+      searchBadgeInjected = true
+    }
+    msg.content += delta
     if (chatScrollRef.value) {
       const el = chatScrollRef.value
       if (el.scrollHeight - el.scrollTop - el.clientHeight < 80) {
@@ -594,7 +614,7 @@ async function sendChat(): Promise<void> {
     }
   })
 
-  // 订阅搜索事件，记录关键词到消息（用于展示搜索徽章）
+  // 订阅搜索事件，记录关键词（保持"正在搜索..."状态，直到 Phase 2 首 chunk 到达）
   const unsubscribeSearch = window.api.onChatSearchQuery((query) => {
     chatMessages.value[assistantIdx].searchQuery = query
   })
@@ -640,6 +660,8 @@ async function parseVideo(): Promise<void> {
   activeChunkId.value = ''
   expandedIds.value = []
   expandedCardIds.value = []
+  // 新解析开始时，重置到时间轴 Tab，以便用户看到实时进度日志
+  activeTab.value = 'timeline'
   loading.value = true
 
   // 先销毁当前 webview，停止后台播放
@@ -853,6 +875,9 @@ async function loadHistoryItem(item: HistoryItem): Promise<void> {
   try {
     const cached = await window.api.getCache(item.url)
     if (cached) {
+      // 清除之前的弹幕数据，确保加载缓存时不显示旧数据
+      danmakuData.value = null
+      activeTab.value = 'timeline'
       timelineChunks.value = parseMarkdown(cached)
       currentPlatform.value = item.platform
       videoId.value = extractVideoId(item.url, item.platform) || ''
@@ -1808,19 +1833,13 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
                       <div class="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce [animation-delay:300ms]" />
                     </template>
                   </div>
-                  <!-- 有内容时渲染 Markdown（流式状态带光标） -->
-                  <template v-else>
-                    <!-- 搜索来源徽章（搜索完成后常驻显示） -->
-                    <div v-if="msg.searchQuery" class="flex items-center gap-1 mb-2 text-[11px] text-amber-600/80">
-                      <IconSearch class="w-3 h-3 shrink-0" />
-                      <span>已联网搜索：{{ msg.searchQuery }}</span>
-                    </div>
-                    <div
-                      class="markdown-body select-text"
-                      v-html="renderMarkdown(msg.content, msg.streaming)"
-                      @click="handleMarkdownClick"
-                    />
-                  </template>
+                  <!-- 有内容时渲染 Markdown（流式状态带光标；搜索徽章内嵌于内容流） -->
+                  <div
+                    v-else
+                    class="markdown-body select-text"
+                    v-html="renderMarkdown(msg.content, msg.streaming)"
+                    @click="handleMarkdownClick"
+                  />
                 </div>
               </div>
             </div>
