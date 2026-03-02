@@ -35,6 +35,9 @@ def parse_args():
 
   # 禁用 embedding 缓存
   python main.py "https://..." --no-cache
+
+  # 跳过弹幕获取
+  python main.py "https://..." --skip-danmaku
         """,
     )
     parser.add_argument("url", help="B站视频URL")

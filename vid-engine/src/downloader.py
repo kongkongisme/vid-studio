@@ -36,6 +36,17 @@ class VideoDownloader:
         self.work_dir = Path(work_dir)
         self._cookie_opts = _build_cookie_opts()
 
+    @staticmethod
+    def _info_to_meta(info: dict) -> "VideoMeta":
+        """从 yt-dlp info 字典构建 VideoMeta"""
+        return VideoMeta(
+            id=info.get("id", ""),
+            title=info.get("title", "未知标题"),
+            duration=int(info.get("duration") or 0),
+            uploader=info.get("uploader", ""),
+            language=info.get("language", "") or "",
+        )
+
     def _base_opts(self) -> dict:
         return {
             "quiet": True,
@@ -52,13 +63,7 @@ class VideoDownloader:
         opts = {**self._base_opts(), "extract_flat": False}
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            return VideoMeta(
-                id=info.get("id", ""),
-                title=info.get("title", "未知标题"),
-                duration=int(info.get("duration") or 0),
-                uploader=info.get("uploader", ""),
-                language=info.get("language", "") or "",
-            )
+            return self._info_to_meta(info)
 
     def get_video_meta_with_info(self, url: str) -> Tuple["VideoMeta", dict]:
         """获取视频元信息，同时返回完整 info 字典（YouTube 含评论）"""
@@ -73,14 +78,7 @@ class VideoDownloader:
 
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            meta = VideoMeta(
-                id=info.get("id", ""),
-                title=info.get("title", "未知标题"),
-                duration=int(info.get("duration") or 0),
-                uploader=info.get("uploader", ""),
-                language=info.get("language", "") or "",
-            )
-            return meta, info
+            return self._info_to_meta(info), info
 
     def download_video(self, url: str) -> str:
         """下载低画质视频文件（360p），用于视频理解模型"""

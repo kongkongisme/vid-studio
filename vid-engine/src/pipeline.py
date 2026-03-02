@@ -1,10 +1,14 @@
 """处理管道：编排从下载到输出的完整流程"""
+import json
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from src.danmaku import DanmakuData
 
 from src.config import get_config
 from src.downloader import VideoDownloader
@@ -140,7 +144,7 @@ def _analyze_segment_visuals(
     return results
 
 
-def _fetch_danmaku(url: str, meta: VideoMeta, raw_info: Optional[dict] = None):
+def _fetch_danmaku(url: str, meta: VideoMeta, raw_info: Optional[dict] = None) -> Optional["DanmakuData"]:
     """获取弹幕/评论数据，失败返回 None"""
     from src.danmaku import DanmakuProcessor
     proc = DanmakuProcessor()
@@ -216,7 +220,11 @@ def run(url: str, output_path: str, options: Optional[PipelineOptions] = None) -
                     sys.exit(1)
 
                 video_analysis, video_file = vu_future.result()
-                danmaku_data = dm_future.result() if dm_future else None
+                try:
+                    danmaku_data = dm_future.result() if dm_future else None
+                except Exception as e:
+                    print(f"  弹幕获取失败（{e}），跳过")
+                    danmaku_data = None
 
         if not segments:
             print("错误：未能获取任何字幕或语音内容，无法处理。")
@@ -288,7 +296,6 @@ def run(url: str, output_path: str, options: Optional[PipelineOptions] = None) -
 
         # 写出弹幕 JSON（可选）
         if danmaku_data:
-            import json as _json
             danmaku_path = Path(output_path + ".danmaku.json")
             danmaku_dict = {
                 "platform": danmaku_data.platform,
@@ -297,5 +304,5 @@ def run(url: str, output_path: str, options: Optional[PipelineOptions] = None) -
                 "density_bins": danmaku_data.density_bins,
                 "chunk_top": danmaku_data.chunk_top,
             }
-            danmaku_path.write_text(_json.dumps(danmaku_dict, ensure_ascii=False), encoding="utf-8")
+            danmaku_path.write_text(json.dumps(danmaku_dict, ensure_ascii=False), encoding="utf-8")
             print(f"弹幕数据已写入：{danmaku_path.resolve()}")
