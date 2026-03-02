@@ -280,6 +280,7 @@ def run(url: str, output_path: str, options: Optional[PipelineOptions] = None) -
             chunks,
             meta.title,
             visual_contexts=visual_contexts,
+            danmaku_contexts=danmaku_contexts,   # 传入弹幕段落摘要
             checkpoint=checkpoint,
         )
 

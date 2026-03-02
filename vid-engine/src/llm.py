@@ -46,6 +46,11 @@ _VISUAL_SECTION = """\
 {visual_context}
 """
 
+_DANMAKU_SECTION = """\
+观众弹幕反应（该时间段热门弹幕，反映观众实时关注点）：
+{danmaku_summary}
+"""
+
 _REFINE_ANALYSIS_PROMPT = """\
 以下是通过 AI 视觉模型对视频样本帧的整体观察：
 
@@ -90,20 +95,23 @@ class LLMStructurer:
         chunks: List[TimelineChunk],
         video_title: str,
         visual_contexts: Optional[Dict[int, str]] = None,
+        danmaku_contexts: Optional[Dict[int, str]] = None,   # 弹幕段落摘要
         checkpoint: Optional["ChunkCheckpoint"] = None,
     ) -> List[str]:
         """
         并行处理多个时间块，返回按原始顺序排列的结构化文本列表
 
         Args:
-            chunks:          时间块列表
-            video_title:     视频标题（提供上下文）
-            visual_contexts: 段落视觉描述 {chunk_index: visual_text}（可选）
-            checkpoint:      断点续跑对象，若传入则优先读缓存（可选）
+            chunks:           时间块列表
+            video_title:      视频标题（提供上下文）
+            visual_contexts:  段落视觉描述 {chunk_index: visual_text}（可选）
+            danmaku_contexts: 段落弹幕摘要 {chunk_index: danmaku_summary}（可选）
+            checkpoint:       断点续跑对象，若传入则优先读缓存（可选）
         """
         results: List[Optional[str]] = [None] * len(chunks)
         pending_indices: List[int] = []
         visual_contexts = visual_contexts or {}
+        danmaku_contexts = danmaku_contexts or {}
 
         # 从断点恢复已完成的块
         if checkpoint:
@@ -131,6 +139,7 @@ class LLMStructurer:
                     chunks[i],
                     video_title,
                     visual_contexts.get(i),
+                    danmaku_contexts.get(i),   # 传入弹幕摘要
                 )
                 future_to_idx[future] = i
 
@@ -154,6 +163,7 @@ class LLMStructurer:
         chunk: TimelineChunk,
         video_title: str,
         visual_context: Optional[str] = None,
+        danmaku_context: Optional[str] = None,
         max_retries: int = 3,
     ) -> str:
         """对单个时间块调用 DeepSeek，返回结构化 Markdown"""
@@ -162,9 +172,14 @@ class LLMStructurer:
         if visual_context and visual_context.strip() not in ("无", ""):
             visual_section = _VISUAL_SECTION.format(visual_context=visual_context)
 
+        # 仅在有弹幕数据时附加弹幕段落
+        danmaku_section = ""
+        if danmaku_context and danmaku_context.strip():
+            danmaku_section = _DANMAKU_SECTION.format(danmaku_summary=danmaku_context)
+
         prompt = _CHUNK_PROMPT.format(
             subtitle_text=chunk.text_for_llm,
-            visual_section=visual_section,
+            visual_section=visual_section + danmaku_section,
             start_time=chunk.start_str,
             end_time=chunk.end_str,
         )
