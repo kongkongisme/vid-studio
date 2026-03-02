@@ -30,6 +30,11 @@ class TimelineChunk:
         return seconds_to_hms(self.end)
 
     @property
+    def id_str(self) -> str:
+        """对应前端 chunk.id 的格式：startTime-endTime"""
+        return f"{self.start_str}-{self.end_str}"
+
+    @property
     def text_for_llm(self) -> str:
         """供 LLM 处理的格式化文本（含时间戳前缀）"""
         lines = []
