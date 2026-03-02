@@ -184,6 +184,15 @@ interface ParseOptions {
   skipVideo?: boolean
 }
 
+// 弹幕数据结构
+interface DanmakuData {
+  platform: string
+  total_count: number
+  word_freq: [string, number][]
+  density_bins: [number, number, number][]
+  chunk_top: Record<string, string[]>
+}
+
 // 记录当前解析进程，用于停止
 let currentParseProc: ChildProcess | null = null
 
@@ -192,7 +201,7 @@ ipcMain.handle('parse-video', async (event, url: string, options: ParseOptions =
   const args = ['main.py', url, '-o', outputPath]
   if (options.skipVideo !== false) args.push('--skip-video')
 
-  return new Promise<{ success: boolean; output?: string; danmaku?: object | null; error?: string }>((resolve) => {
+  return new Promise<{ success: boolean; output?: string; danmaku?: DanmakuData | null; error?: string }>((resolve) => {
     const proc = spawn(pythonBin, args, { cwd: vidEnginePath, env: buildSpawnEnv() })
     currentParseProc = proc
 
@@ -209,10 +218,10 @@ ipcMain.handle('parse-video', async (event, url: string, options: ParseOptions =
       if (code === 0) {
         try {
           const output = await readFile(outputPath, 'utf-8')
-          let danmaku: object | null = null
+          let danmaku: DanmakuData | null = null
           try {
             const raw = await readFile(`${outputPath}.danmaku.json`, 'utf-8')
-            danmaku = JSON.parse(raw)
+            danmaku = JSON.parse(raw) as DanmakuData
           } catch {
             // 弹幕数据可选，获取失败静默忽略
           }
