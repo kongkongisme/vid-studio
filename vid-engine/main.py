@@ -3,8 +3,10 @@
 
 用法：
     python main.py <B站视频URL> [-o output.txt]
+    python main.py <本地视频路径> --local-file [-o output.txt]
 """
 import argparse
+import os
 
 from dotenv import load_dotenv
 
@@ -38,9 +40,12 @@ def parse_args():
 
   # 跳过弹幕获取
   python main.py "https://..." --skip-danmaku
+
+  # 解析本地视频文件
+  python main.py "/path/to/video.mp4" --local-file
         """,
     )
-    parser.add_argument("url", help="B站视频URL")
+    parser.add_argument("url", help="视频 URL 或本地视频路径")
     parser.add_argument(
         "-o", "--output",
         default="output.txt",
@@ -77,15 +82,26 @@ def parse_args():
         action="store_true",
         help="跳过弹幕获取，加快处理速度",
     )
+    parser.add_argument(
+        "--local-file",
+        action="store_true",
+        help="将输入参数按本地视频文件路径处理",
+    )
+    parser.add_argument(
+        "--llm-provider",
+        choices=("deepseek", "gpt-5.6-sol"),
+        default=os.environ.get("LLM_PROVIDER", "deepseek"),
+        help="结构化处理模型（默认：deepseek）",
+    )
     return parser.parse_args()
 
 
 def main():
     load_dotenv()
-    # load_dotenv 之后重置配置，确保读取到最新的环境变量
-    reset_config()
-
     args = parse_args()
+    os.environ["LLM_PROVIDER"] = args.llm_provider
+    # load_dotenv 和命令行模型选择之后重置配置，确保读取到最新配置
+    reset_config()
     options = PipelineOptions(
         skip_video=args.skip_video,
         visual_per_segment=args.visual_per_segment,
@@ -93,6 +109,7 @@ def main():
         fresh=args.fresh,
         no_cache=args.no_cache,
         skip_danmaku=args.skip_danmaku,
+        local_file=args.local_file,
     )
     run(args.url, args.output, options)
 

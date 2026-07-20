@@ -9,6 +9,7 @@ class Config:
     # API Keys
     siliconflow_api_key: str = ""
     deepseek_api_key: str = ""
+    gpt_api_key: str = ""
     zhipuai_api_key: str = ""
 
     # ASR
@@ -22,8 +23,11 @@ class Config:
     embed_cache_enabled: bool = True      # 是否启用磁盘缓存
 
     # LLM
+    llm_provider: str = "deepseek"
+    llm_api_key: str = ""
     llm_model: str = "deepseek-chat"
     llm_base_url: str = "https://api.deepseek.com"
+    llm_reasoning_effort: str = ""
     llm_max_tokens: int = 800
     llm_temperature: float = 0.3
     llm_max_workers: int = 4             # 并行调用线程数
@@ -44,7 +48,21 @@ def load_config() -> "Config":
     c = Config()
     c.siliconflow_api_key = os.environ.get("SILICONFLOW_API_KEY", "")
     c.deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    c.gpt_api_key = os.environ.get("GPT_API_KEY", "")
     c.zhipuai_api_key = os.environ.get("ZHIPUAI_API_KEY", "")
+
+    provider = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
+    c.llm_provider = "gpt-5.6-sol" if provider in ("gpt", "gpt-5.6-sol") else "deepseek"
+    if c.llm_provider == "gpt-5.6-sol":
+        c.llm_api_key = c.gpt_api_key
+        c.llm_model = os.environ.get("GPT_MODEL", "gpt-5.6-sol")
+        c.llm_base_url = os.environ.get("GPT_BASE_URL", "https://api.openai.com/v1")
+        c.llm_reasoning_effort = os.environ.get("GPT_REASONING_EFFORT", "high")
+    else:
+        c.llm_api_key = c.deepseek_api_key
+        c.llm_model = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+        c.llm_base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+        c.llm_reasoning_effort = ""
 
     if v := os.environ.get("LLM_MAX_WORKERS"):
         c.llm_max_workers = int(v)

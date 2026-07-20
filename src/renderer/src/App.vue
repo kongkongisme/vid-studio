@@ -10,8 +10,9 @@ import {
   getWebviewSession,
   getFullscreenScript,
   getSeekScript,
-  getSeekFallbackUrl,
+  getSeekFallbackUrl
 } from './platform'
+import LocalVideoPlayer from './components/LocalVideoPlayer.vue'
 import { marked } from 'marked'
 
 // 配置 marked：启用换行符转 <br>，禁用 mangle/headerIds（避免警告）
@@ -39,7 +40,10 @@ import {
   IconSparkles,
   IconClipboard,
   IconHistory,
-  IconStar
+  IconStar,
+  IconFolderOpen,
+  IconDownload,
+  IconShieldCheck
 } from '@tabler/icons-vue'
 
 // ─── 类型定义 ─────────────────────────────────────────────
@@ -68,7 +72,7 @@ interface ChatMessage {
   content: string
   quotedChunk?: TimelineChunk
   streaming?: boolean
-  searchQuery?: string  // LLM 触发 Tavily 搜索时记录的关键词
+  searchQuery?: string // LLM 触发 Tavily 搜索时记录的关键词
 }
 
 interface DanmakuData {
@@ -79,8 +83,53 @@ interface DanmakuData {
   chunk_top: Record<string, string[]>
 }
 
+interface LocalVideoFile {
+  name: string
+  path: string
+  previewUrl: string
+  isObjectUrl: boolean
+}
+
+interface LlmCallReceipt {
+  purpose: string
+  provider: LlmProvider
+  requestedModel: string
+  responseModel?: string
+  endpoint: string
+  requestId?: string
+  timestamp: string
+  durationMs: number
+  reasoningEffort?: string
+  status: 'success' | 'fallback'
+  error?: string
+}
+
+interface TimelineExportPayload {
+  title: string
+  sourceLabel: string
+  modeLabel: string
+  exportedAt: string
+  highlightTerm?: string
+  includeTranscript: boolean
+  llmProvider: LlmProvider
+  llmReceipt?: LlmCallReceipt
+  chunks: {
+    startTime: string
+    endTime: string
+    title: string
+    summary: string
+    keyPoints: string[]
+    tags: string[]
+    transcript: { time: string; text: string }[]
+  }[]
+}
+
+type InputSource = 'url' | 'local'
+type LlmProvider = 'deepseek' | 'gpt-5.6-sol'
+
 // ─── 应用版本 ─────────────────────────────────────────────
 
+// eslint-disable-next-line no-undef
 const appVersion = __APP_VERSION__
 
 // ─── 状态 ─────────────────────────────────────────────────
@@ -99,6 +148,21 @@ const expandedIds = ref<string[]>([])
 const expandedCardIds = ref<string[]>([])
 const videoLoaded = ref(false)
 const skipVideo = ref(true)
+const sourceMode = ref<InputSource>('url')
+const selectedLocalFile = ref<LocalVideoFile | null>(null)
+const localPlayerRef = ref<{ seekTo: (seconds: number) => Promise<void> } | null>(null)
+const localFileInputRef = ref<HTMLInputElement | null>(null)
+const localPlaybackStatus = ref<'idle' | 'checking' | 'converting' | 'ready' | 'error'>('idle')
+const localPlaybackProgress = ref(0)
+const localPlaybackMessage = ref('')
+const localPlaybackNeedsProxy = ref(false)
+const exportingDocument = ref(false)
+const documentExportMsg = ref('')
+const llmProvider = ref<LlmProvider>('deepseek')
+const includeTranscriptInExport = ref(true)
+const lastLlmReceipt = ref<LlmCallReceipt | null>(null)
+const receiptDetailsRef = ref<HTMLDetailsElement | null>(null)
+let unsubscribeLocalPlaybackProgress: (() => void) | null = null
 
 // ─── Phase 1: 智能 URL 检测 ────────────────────────────────
 
@@ -113,13 +177,14 @@ interface HistoryItem {
   id: string
   url: string
   title: string
-  platform: 'bilibili' | 'youtube'
+  platform: 'bilibili' | 'youtube' | 'local'
   thumbnail?: string
   mode: 'asr' | 'visual'
   createdAt: number
   favorited: boolean
   outputPath?: string
   duration?: number
+  filePath?: string
 }
 
 const historyList = ref<HistoryItem[]>([])
@@ -163,6 +228,9 @@ const chatInputRef = ref<HTMLTextAreaElement | null>(null)
 
 // 视频未解析完成时禁止对话
 const chatDisabled = computed(() => !timelineChunks.value.length)
+const exportTranscriptLineCount = computed(() =>
+  timelineChunks.value.reduce((total, chunk) => total + chunk.transcript.length, 0)
+)
 
 const latestProgress = computed(() => {
   for (let i = progressLog.value.length - 1; i >= 0; i--) {
@@ -183,6 +251,15 @@ const cookieCombinedStatus = computed(() => {
   return 'idle'
 })
 
+function formatReceiptTime(timestamp: string): string {
+  const date = new Date(timestamp)
+  return Number.isNaN(date.getTime()) ? timestamp : date.toLocaleString('zh-CN')
+}
+
+function getReceiptProviderLabel(provider: LlmProvider): string {
+  return provider === 'gpt-5.6-sol' ? 'GPT-5.6 Sol' : 'DeepSeek'
+}
+
 // 弹幕词云数据：根据词频计算字体大小（12px ~ 32px）
 // ─── 工具函数 ─────────────────────────────────────────────
 
@@ -191,6 +268,170 @@ function timeToSeconds(time: string): number {
   if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]
   if (parts.length === 2) return parts[0] * 60 + parts[1]
   return 0
+}
+
+const LOCAL_VIDEO_EXTENSIONS = new Set(['mp4', 'wmv', 'mov', 'mkv', 'avi', 'webm', 'flv', 'm4v'])
+const LOCAL_VIDEO_ACCEPT = [
+  'video/mp4',
+  'video/x-ms-wmv',
+  'video/quicktime',
+  'video/x-matroska',
+  'video/x-msvideo',
+  'video/webm',
+  'video/x-flv',
+  '.mp4',
+  '.wmv',
+  '.mov',
+  '.mkv',
+  '.avi',
+  '.webm',
+  '.flv',
+  '.m4v'
+].join(',')
+
+function getFileExtension(name: string): string {
+  return name.split('.').pop()?.toLowerCase() ?? ''
+}
+
+function isSupportedVideoFile(file: File): boolean {
+  return LOCAL_VIDEO_EXTENSIONS.has(getFileExtension(file.name))
+}
+
+function getLocalCacheKey(filePath: string): string {
+  return `local:${filePath}`
+}
+
+function getFileNameFromPath(filePath: string): string {
+  return filePath.split(/[\\/]/).pop() || '本地视频'
+}
+
+function pathToFileUrl(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/')
+  if (/^[A-Za-z]:\//.test(normalized)) return `file:///${encodeURI(normalized)}`
+  return `file://${encodeURI(normalized)}`
+}
+
+function getNativeFilePath(file: File): string {
+  if (typeof window.api.getPathForFile === 'function') {
+    return window.api.getPathForFile(file)
+  }
+
+  return (file as File & { path?: string }).path ?? ''
+}
+
+function resetAnalysisState(): void {
+  errorMsg.value = ''
+  progressLog.value = []
+  timelineChunks.value = []
+  danmakuData.value = null
+  activeChunkId.value = ''
+  expandedIds.value = []
+  expandedCardIds.value = []
+  activeTab.value = 'timeline'
+  lastLlmReceipt.value = null
+  clearChat()
+}
+
+function revokeLocalPreview(): void {
+  if (selectedLocalFile.value?.isObjectUrl) {
+    URL.revokeObjectURL(selectedLocalFile.value.previewUrl)
+  }
+}
+
+function setLocalVideoFile(file: LocalVideoFile, resetAnalysis = true): void {
+  revokeLocalPreview()
+  selectedLocalFile.value = file
+  sourceMode.value = 'local'
+  url.value = file.name
+  currentPlatform.value = null
+  videoId.value = ''
+  videoUrl.value = ''
+  videoLoaded.value = true
+  isWebFullscreen.value = true
+  if (resetAnalysis) resetAnalysisState()
+}
+
+function clearLocalVideoFile(resetAnalysis = false): void {
+  revokeLocalPreview()
+  selectedLocalFile.value = null
+  sourceMode.value = 'url'
+  localPlaybackStatus.value = 'idle'
+  localPlaybackProgress.value = 0
+  localPlaybackMessage.value = ''
+  localPlaybackNeedsProxy.value = false
+  if (resetAnalysis) resetAnalysisState()
+}
+
+function updateLocalPlaybackUrl(filePath: string, playbackUrl: string): void {
+  const current = selectedLocalFile.value
+  if (!current || current.path !== filePath) return
+  if (current.isObjectUrl) URL.revokeObjectURL(current.previewUrl)
+  selectedLocalFile.value = {
+    ...current,
+    previewUrl: playbackUrl,
+    isObjectUrl: false
+  }
+}
+
+async function prepareLocalPlayback(filePath: string, forceProxy = false): Promise<void> {
+  const preparePlayback = window.api.prepareLocalVideoPlayback
+  if (typeof preparePlayback !== 'function') {
+    localPlaybackStatus.value = 'error'
+    localPlaybackMessage.value = '本地播放 API 尚未加载，请重启应用'
+    return
+  }
+
+  localPlaybackStatus.value = 'checking'
+  localPlaybackProgress.value = 0
+  localPlaybackMessage.value = '正在准备本地播放器'
+
+  try {
+    const result = await preparePlayback(filePath, forceProxy)
+    if (!selectedLocalFile.value || selectedLocalFile.value.path !== filePath) return
+
+    if (result.success && result.url) {
+      updateLocalPlaybackUrl(filePath, result.url)
+      localPlaybackNeedsProxy.value = Boolean(result.needsProxy)
+      localPlaybackStatus.value = 'ready'
+      localPlaybackProgress.value = 100
+      localPlaybackMessage.value = result.message ?? '播放器已就绪'
+    } else {
+      localPlaybackStatus.value = 'error'
+      localPlaybackMessage.value = result.error ?? '无法生成可播放预览'
+    }
+  } catch (e) {
+    if (!selectedLocalFile.value || selectedLocalFile.value.path !== filePath) return
+    localPlaybackStatus.value = 'error'
+    localPlaybackMessage.value = String(e)
+  }
+}
+
+async function selectLocalFile(file: File): Promise<boolean> {
+  if (!isSupportedVideoFile(file)) {
+    errorMsg.value = '请选择 mp4、wmv、mov、mkv、avi、webm、flv 或 m4v 视频文件'
+    return false
+  }
+
+  const filePath = getNativeFilePath(file)
+  if (!filePath) {
+    errorMsg.value = '本地文件 API 尚未加载，请重启应用后再选择视频文件'
+    return false
+  }
+
+  setLocalVideoFile({
+    name: file.name,
+    path: filePath,
+    previewUrl: URL.createObjectURL(file),
+    isObjectUrl: true
+  })
+  void prepareLocalPlayback(filePath)
+  return true
+}
+
+function handleLocalPlaybackError(): void {
+  const localFile = selectedLocalFile.value
+  if (!localFile || localPlaybackNeedsProxy.value) return
+  void prepareLocalPlayback(localFile.path, true)
 }
 
 // ─── Markdown 解析器 ──────────────────────────────────────
@@ -301,6 +542,7 @@ const HOLD_PLAY_SCRIPT = `
   })();
 `
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function injectWebFullscreen(wv: any): void {
   if (!currentPlatform.value) return
 
@@ -340,19 +582,28 @@ watch(videoId, async (newVal, oldVal) => {
   const wv = webviewRef.value
   if (!wv) return
   videoLoaded.value = false
-  wv.addEventListener('did-finish-load', () => {
-    videoLoaded.value = true
-    // B 站需要先 hold 再全屏；YouTube watch 页由 injectWebFullscreen 直接处理
-    if (currentPlatform.value === 'bilibili') {
-      wv.executeJavaScript(HOLD_PLAY_SCRIPT).catch(() => {})
-    }
-    injectWebFullscreen(wv)
-  }, { once: true })
+  wv.addEventListener(
+    'did-finish-load',
+    () => {
+      videoLoaded.value = true
+      // B 站需要先 hold 再全屏；YouTube watch 页由 injectWebFullscreen 直接处理
+      if (currentPlatform.value === 'bilibili') {
+        wv.executeJavaScript(HOLD_PLAY_SCRIPT).catch(() => {})
+      }
+      injectWebFullscreen(wv)
+    },
+    { once: true }
+  )
 })
 
 // ─── 视频跳转 ─────────────────────────────────────────────
 
 async function seekTo(seconds: number): Promise<void> {
+  if (sourceMode.value === 'local' && localPlayerRef.value) {
+    await localPlayerRef.value.seekTo(seconds)
+    return
+  }
+
   if (webviewRef.value && videoLoaded.value) {
     try {
       const ok = await webviewRef.value.executeJavaScript(getSeekScript(seconds))
@@ -415,7 +666,12 @@ function autoResizeTextarea(e: Event): void {
 function buildSystemPrompt(): string {
   const now = new Date()
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const dateStr = now.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', timeZone })
+  const dateStr = now.toLocaleDateString('zh-CN', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    timeZone
+  })
   const timeStr = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', timeZone })
   const currentTime = `当前时间：${dateStr} ${timeStr}（${timeZone}）`
 
@@ -454,7 +710,8 @@ function clearChat(confirm = false): void {
 
 // 时间戳格式匹配正则（用于 renderMarkdown 后处理）
 // 格式1：[MM:SS-MM:SS] 时间范围（方括号），点击跳转起始时间
-const TS_BRACKET_RANGE_REGEX = /\[(\d{1,2}):(\d{2})(?::(\d{2}))?\s*[-–]\s*\d{1,2}:\d{2}(?::\d{2})?\]/g
+const TS_BRACKET_RANGE_REGEX =
+  /\[(\d{1,2}):(\d{2})(?::(\d{2}))?\s*[-–]\s*\d{1,2}:\d{2}(?::\d{2})?\]/g
 // 格式2：[MM:SS] 或 [HH:MM:SS] 单个时间点（方括号）
 const TS_BRACKET_REGEX = /\[(\d{1,2}):(\d{2})(?::(\d{2}))?\]/g
 // 格式3：（MM:SS-MM:SS）时间范围（全角括号），点击跳转起始时间
@@ -470,7 +727,7 @@ function parseSeconds(p1: string, p2: string, p3: string | undefined): number {
 }
 
 // 搜索来源标记的内联 HTML（内嵌于 markdown 内容流中）
-const SEARCH_BADGE_HTML = (query: string) =>
+const SEARCH_BADGE_HTML = (query: string): string =>
   `<div style="display:flex;align-items:center;gap:6px;margin:10px 0;font-size:11px;color:#b45309;opacity:0.75">` +
   `<div style="flex:1;height:1px;background:#fde68a"></div>` +
   `<span style="white-space:nowrap;font-weight:500">🔍 已联网搜索：${query}</span>` +
@@ -506,9 +763,7 @@ function renderMarkdown(content: string, streaming = false): string {
     // 在最后一个 </p> 前插入光标，使其显示在段落文字末尾
     const lastP = html.lastIndexOf('</p>')
     const cursor = '<span class="md-cursor">▌</span>'
-    html = lastP !== -1
-      ? html.slice(0, lastP) + cursor + html.slice(lastP)
-      : html + cursor
+    html = lastP !== -1 ? html.slice(0, lastP) + cursor + html.slice(lastP) : html + cursor
   }
   return html
 }
@@ -525,9 +780,7 @@ function handleMarkdownClick(e: MouseEvent): void {
 
 // 构建引用片段的 LLM 上下文（含标题、总结、核心观点、原文片段）
 function buildQuotedContent(chunk: TimelineChunk, userText: string): string {
-  const lines: string[] = [
-    `[引用片段 ${chunk.startTime}-${chunk.endTime}: ${chunk.title}]`
-  ]
+  const lines: string[] = [`[引用片段 ${chunk.startTime}-${chunk.endTime}: ${chunk.title}]`]
   if (chunk.summary) lines.push(`总结：${chunk.summary}`)
   if (chunk.keyPoints.length) lines.push(`核心观点：${chunk.keyPoints.join('；')}`)
   const transcriptPreview = chunk.transcript
@@ -569,9 +822,7 @@ async function sendChat(): Promise<void> {
     })),
     {
       role: 'user',
-      content: quoted
-        ? buildQuotedContent(quoted, text)
-        : text
+      content: quoted ? buildQuotedContent(quoted, text) : text
     }
   ]
 
@@ -610,7 +861,8 @@ async function sendChat(): Promise<void> {
     if (typeof (window.api as any).chatWithVideo !== 'function') {
       throw new Error('对话 API 不可用，请重启应用（执行 npm run dev 重新启动）')
     }
-    const result = await window.api.chatWithVideo(apiMessages)
+    const result = await window.api.chatWithVideo(apiMessages, llmProvider.value)
+    if (result.llmReceipt) lastLlmReceipt.value = result.llmReceipt
     // 流未收到任何内容才显示错误（如 API Key 无效）
     if (!result.success && result.error && !chatMessages.value[assistantIdx].content) {
       chatMessages.value[assistantIdx].content = `错误：${result.error}`
@@ -631,6 +883,11 @@ async function sendChat(): Promise<void> {
 // ─── 解析视频 ─────────────────────────────────────────────
 
 async function parseVideo(): Promise<void> {
+  if (sourceMode.value === 'local') {
+    await parseLocalVideo()
+    return
+  }
+
   const validationError = validateUrl(url.value)
   if (validationError) {
     errorMsg.value = validationError
@@ -639,18 +896,11 @@ async function parseVideo(): Promise<void> {
   const platform = detectPlatform(url.value.trim())!
   const id = extractVideoId(url.value.trim(), platform)!
 
-  errorMsg.value = ''
-  progressLog.value = []
-  timelineChunks.value = []
-  danmakuData.value = null
-  activeChunkId.value = ''
-  expandedIds.value = []
-  expandedCardIds.value = []
-  // 新解析开始时，重置到时间轴 Tab，以便用户看到实时进度日志
-  activeTab.value = 'timeline'
+  resetAnalysisState()
   loading.value = true
 
   // 先销毁当前 webview，停止后台播放
+  clearLocalVideoFile()
   videoId.value = ''
   videoUrl.value = ''
   videoLoaded.value = false
@@ -661,8 +911,54 @@ async function parseVideo(): Promise<void> {
   videoId.value = id
   videoUrl.value = getWebviewUrl(id, platform)
 
-  // 解析新视频时自动清空对话
-  clearChat()
+  const unsubscribe = window.api.onParseProgress((line) => {
+    progressLog.value.push(line.trimEnd())
+    if (progressLog.value.length > 200) progressLog.value.shift()
+  })
+
+  try {
+    const result = await window.api.parseVideo(videoUrl.value, {
+      skipVideo: skipVideo.value,
+      llmProvider: llmProvider.value
+    })
+    if (result.success && result.output) {
+      timelineChunks.value = parseMarkdown(result.output)
+      danmakuData.value = result.danmaku ?? null
+      if (result.llmReceipt) lastLlmReceipt.value = result.llmReceipt
+      // 保存到历史记录
+      await saveHistory(result.output)
+    } else {
+      errorMsg.value = result.error ?? '解析失败，请检查网络或 API Key 配置'
+    }
+  } catch (e) {
+    errorMsg.value = String(e)
+  } finally {
+    loading.value = false
+    unsubscribe()
+  }
+}
+
+async function parseLocalVideo(): Promise<void> {
+  const localFile = selectedLocalFile.value
+  if (!localFile) {
+    errorMsg.value = '请先选择本地视频文件'
+    return
+  }
+
+  const parseLocal = window.api.parseLocalVideo
+  if (typeof parseLocal !== 'function') {
+    errorMsg.value = '本地视频解析 API 尚未加载，请重启应用后再解析'
+    return
+  }
+
+  resetAnalysisState()
+  sourceMode.value = 'local'
+  loading.value = true
+  currentPlatform.value = null
+  videoId.value = ''
+  videoUrl.value = ''
+  videoLoaded.value = true
+  isWebFullscreen.value = true
 
   const unsubscribe = window.api.onParseProgress((line) => {
     progressLog.value.push(line.trimEnd())
@@ -670,14 +966,17 @@ async function parseVideo(): Promise<void> {
   })
 
   try {
-    const result = await window.api.parseVideo(videoUrl.value, { skipVideo: skipVideo.value })
+    const result = await parseLocal(localFile.path, {
+      skipVideo: skipVideo.value,
+      llmProvider: llmProvider.value
+    })
     if (result.success && result.output) {
       timelineChunks.value = parseMarkdown(result.output)
-      danmakuData.value = result.danmaku ?? null
-      // 保存到历史记录
+      danmakuData.value = null
+      if (result.llmReceipt) lastLlmReceipt.value = result.llmReceipt
       await saveHistory(result.output)
     } else {
-      errorMsg.value = result.error ?? '解析失败，请检查网络或 API Key 配置'
+      errorMsg.value = result.error ?? '解析失败，请检查本地视频格式或 API Key 配置'
     }
   } catch (e) {
     errorMsg.value = String(e)
@@ -715,7 +1014,27 @@ function handleUrlPaste(e: ClipboardEvent): void {
   e.preventDefault()
   const text = e.clipboardData?.getData('text/plain') ?? ''
   if (!text) return
+  clearLocalVideoFile(true)
   url.value = applyExtractedUrl(text)
+}
+
+function openLocalFilePicker(): void {
+  localFileInputRef.value?.click()
+}
+
+async function handleLocalFileInput(e: Event): Promise<void> {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (file && (await selectLocalFile(file))) {
+    await parseVideo()
+  }
+}
+
+function handleUrlInput(): void {
+  if (sourceMode.value === 'local') {
+    clearLocalVideoFile(true)
+  }
 }
 
 // ─── 剪贴板快速解析 ───────────────────────────────────────
@@ -734,6 +1053,7 @@ async function pasteAndParse(): Promise<void> {
     errorMsg.value = validationError
     return
   }
+  clearLocalVideoFile(true)
   url.value = extracted
   await parseVideo()
 }
@@ -792,7 +1112,40 @@ async function loadHistory(): Promise<void> {
 }
 
 async function saveHistory(output: string): Promise<void> {
-  console.log('[saveHistory] 开始保存，currentPlatform:', currentPlatform.value, 'videoId:', videoId.value)
+  console.log(
+    '[saveHistory] 开始保存，currentPlatform:',
+    currentPlatform.value,
+    'videoId:',
+    videoId.value
+  )
+  if (sourceMode.value === 'local') {
+    const localFile = selectedLocalFile.value
+    if (!localFile) {
+      console.log('[saveHistory] 跳过：本地文件为空')
+      return
+    }
+
+    const cacheKey = getLocalCacheKey(localFile.path)
+    const title = timelineChunks.value[0]?.title || localFile.name
+    try {
+      await window.api.addHistory({
+        url: cacheKey,
+        title,
+        platform: 'local',
+        filePath: localFile.path,
+        mode: skipVideo.value ? 'asr' : 'visual',
+        favorited: false
+      })
+      await window.api.setCache(cacheKey, output)
+      cachedUrls.value.add(cacheKey)
+      console.log('[saveHistory] 本地视频保存成功（含缓存）')
+      await loadHistory()
+    } catch (e) {
+      console.error('[saveHistory] 本地视频保存失败:', e)
+    }
+    return
+  }
+
   if (!currentPlatform.value || !videoId.value) {
     console.log('[saveHistory] 跳过：平台或视频ID为空')
     return
@@ -814,6 +1167,94 @@ async function saveHistory(output: string): Promise<void> {
     await loadHistory()
   } catch (e) {
     console.error('[saveHistory] 保存失败:', e)
+  }
+}
+
+function getExportTitle(): string {
+  if (sourceMode.value === 'local' && selectedLocalFile.value) {
+    return timelineChunks.value[0]?.title || selectedLocalFile.value.name
+  }
+  return timelineChunks.value[0]?.title || url.value || '视频解析文档'
+}
+
+function getExportSourceLabel(): string {
+  if (sourceMode.value === 'local' && selectedLocalFile.value) {
+    return `来源：本地文件 · ${selectedLocalFile.value.name}`
+  }
+  if (currentPlatform.value === 'bilibili') return `来源：B 站 · ${url.value}`
+  if (currentPlatform.value === 'youtube') return `来源：YouTube · ${url.value}`
+  return `来源：${url.value || '未知'}`
+}
+
+function toExportText(value: unknown): string {
+  return typeof value === 'string' ? value : String(value ?? '')
+}
+
+function buildTimelineExportPayload(): TimelineExportPayload {
+  return {
+    title: getExportTitle(),
+    sourceLabel: getExportSourceLabel(),
+    modeLabel: skipVideo.value ? '解析模式：仅 ASR 解读' : '解析模式：视觉精析',
+    exportedAt: `导出时间：${new Date().toLocaleString('zh-CN')}`,
+    highlightTerm: searchQuery.value.trim(),
+    includeTranscript: includeTranscriptInExport.value,
+    llmProvider: llmProvider.value,
+    llmReceipt: lastLlmReceipt.value ?? undefined,
+    chunks: timelineChunks.value.map((chunk) => ({
+      startTime: toExportText(chunk.startTime),
+      endTime: toExportText(chunk.endTime),
+      title: toExportText(chunk.title),
+      summary: toExportText(chunk.summary),
+      keyPoints: chunk.keyPoints.map(toExportText),
+      tags: chunk.tags.map(toExportText),
+      transcript: includeTranscriptInExport.value
+        ? chunk.transcript.map((line) => ({
+            time: toExportText(line.time),
+            text: toExportText(line.text)
+          }))
+        : []
+    }))
+  }
+}
+
+async function exportTimelineDocument(): Promise<void> {
+  if (!timelineChunks.value.length) {
+    errorMsg.value = '没有可导出的时间轴内容'
+    return
+  }
+  if (includeTranscriptInExport.value && exportTranscriptLineCount.value === 0) {
+    errorMsg.value = '当前解析结果没有原文记录；请取消勾选“原文”，或重新解析视频后再导出'
+    return
+  }
+
+  const exportDocument = window.api.exportTimelineDocument
+  if (typeof exportDocument !== 'function') {
+    errorMsg.value = '文档导出 API 尚未加载，请重启应用'
+    return
+  }
+
+  exportingDocument.value = true
+  documentExportMsg.value = ''
+  try {
+    const payload = JSON.parse(
+      JSON.stringify(buildTimelineExportPayload())
+    ) as TimelineExportPayload
+    const result = await exportDocument(payload)
+
+    if (result.success) {
+      if (result.llmReceipt) lastLlmReceipt.value = result.llmReceipt
+      const title = result.title ? `《${result.title}》` : '文档'
+      documentExportMsg.value = result.path ? `${title}已导出：${result.path}` : `${title}已导出`
+      setTimeout(() => {
+        documentExportMsg.value = ''
+      }, 2600)
+    } else if (!result.canceled) {
+      errorMsg.value = result.error ?? '导出文档失败'
+    }
+  } catch (e) {
+    errorMsg.value = String(e)
+  } finally {
+    exportingDocument.value = false
   }
 }
 
@@ -852,9 +1293,42 @@ async function toggleHistoryPanel(): Promise<void> {
 }
 
 async function loadHistoryItem(item: HistoryItem): Promise<void> {
+  if (item.platform === 'local') {
+    const filePath = item.filePath ?? item.url.replace(/^local:/, '')
+    setLocalVideoFile({
+      name: getFileNameFromPath(filePath),
+      path: filePath,
+      previewUrl: pathToFileUrl(filePath),
+      isObjectUrl: false
+    })
+    void prepareLocalPlayback(filePath)
+    skipVideo.value = item.mode === 'asr'
+    showHistoryPanel.value = false
+
+    try {
+      const cached = await window.api.getCache(item.url)
+      if (cached) {
+        danmakuData.value = null
+        activeTab.value = 'timeline'
+        timelineChunks.value = parseMarkdown(cached)
+        cacheLoadedMsg.value = true
+        setTimeout(() => {
+          cacheLoadedMsg.value = false
+        }, 1500)
+        return
+      }
+    } catch {
+      // 缓存读取失败，继续重新解析
+    }
+
+    await parseVideo()
+    return
+  }
+
   url.value = item.url
   skipVideo.value = item.mode === 'asr'
   showHistoryPanel.value = false
+  clearLocalVideoFile()
 
   // 优先从 SQLite 缓存加载
   try {
@@ -869,7 +1343,9 @@ async function loadHistoryItem(item: HistoryItem): Promise<void> {
       videoUrl.value = getWebviewUrl(videoId.value, item.platform)
       // 显示"从缓存加载"提示，1.5s 后自动消失
       cacheLoadedMsg.value = true
-      setTimeout(() => { cacheLoadedMsg.value = false }, 1500)
+      setTimeout(() => {
+        cacheLoadedMsg.value = false
+      }, 1500)
       return
     }
   } catch {
@@ -904,6 +1380,7 @@ function formatTime(timestamp: number): string {
 }
 
 function getPlatformIcon(platform: string): string {
+  if (platform === 'local') return ''
   return platform === 'bilibili'
     ? 'https://www.bilibili.com/favicon.ico'
     : 'https://www.youtube.com/s/desktop/28b67e7f/img/favicon.ico'
@@ -955,7 +1432,12 @@ function highlightText(text: string, query: string): string {
 // ─── 自动导入浏览器 Cookie ────────────────────────────────
 
 function getBrowserDisplayName(browser: string): string {
-  const map: Record<string, string> = { edge: 'Edge', chrome: 'Chrome', firefox: 'Firefox', safari: 'Safari' }
+  const map: Record<string, string> = {
+    edge: 'Edge',
+    chrome: 'Chrome',
+    firefox: 'Firefox',
+    safari: 'Safari'
+  }
   return map[browser] ?? browser
 }
 
@@ -987,6 +1469,11 @@ onMounted(() => {
   if (savedMode === 'visual') {
     skipVideo.value = false
   }
+  const savedProvider = localStorage.getItem('preferredLlmProvider')
+  if (savedProvider === 'gpt-5.6-sol') {
+    llmProvider.value = savedProvider
+  }
+  includeTranscriptInExport.value = localStorage.getItem('includeTranscriptInExport') !== 'false'
 
   // 启动剪贴板检测
   checkClipboard()
@@ -1001,6 +1488,16 @@ onMounted(() => {
 
   // 绑定快捷键
   window.addEventListener('keydown', handleGlobalKeydown)
+  window.addEventListener('pointerdown', handleGlobalPointerDown)
+
+  if (typeof window.api.onLocalPlaybackProgress === 'function') {
+    unsubscribeLocalPlaybackProgress = window.api.onLocalPlaybackProgress((progress) => {
+      if (!selectedLocalFile.value || progress.filePath !== selectedLocalFile.value.path) return
+      localPlaybackStatus.value = progress.status
+      localPlaybackProgress.value = progress.progress
+      localPlaybackMessage.value = progress.message
+    })
+  }
 
   importBrowserCookies()
   importYoutubeCookies()
@@ -1016,6 +1513,9 @@ onUnmounted(() => {
   window.removeEventListener('dragover', handleDragOver)
   window.removeEventListener('drop', handleDrop)
   window.removeEventListener('keydown', handleGlobalKeydown)
+  window.removeEventListener('pointerdown', handleGlobalPointerDown)
+  unsubscribeLocalPlaybackProgress?.()
+  revokeLocalPreview()
 })
 
 // ─── 偏好记忆持久化 ────────────────────────────────────────
@@ -1024,10 +1524,18 @@ watch(skipVideo, (newVal) => {
   localStorage.setItem('preferredParseMode', newVal ? 'asr' : 'visual')
 })
 
+watch(llmProvider, (newVal) => {
+  localStorage.setItem('preferredLlmProvider', newVal)
+})
+
+watch(includeTranscriptInExport, (newVal) => {
+  localStorage.setItem('includeTranscriptInExport', String(newVal))
+})
+
 // ─── 智能 URL 检测 ─────────────────────────────────────────
 
 async function checkClipboard(): Promise<void> {
-  if (loading.value || showClipboardToast.value) return
+  if (loading.value || showClipboardToast.value || sourceMode.value === 'local') return
 
   try {
     const text = await navigator.clipboard.readText()
@@ -1055,6 +1563,7 @@ async function checkClipboard(): Promise<void> {
 }
 
 async function acceptClipboardUrl(): Promise<void> {
+  clearLocalVideoFile(true)
   url.value = clipboardDetectedUrl.value
   showClipboardToast.value = false
   await parseVideo()
@@ -1071,13 +1580,23 @@ function handleDragOver(e: DragEvent): void {
 
 async function handleDrop(e: DragEvent): Promise<void> {
   e.preventDefault()
+  const file = e.dataTransfer?.files?.[0]
+  if (file) {
+    if (await selectLocalFile(file)) {
+      await parseVideo()
+    }
+    return
+  }
+
   const text = e.dataTransfer?.getData('text')
   if (text) {
     const trimmed = text.trim()
-    if (!validateUrl(trimmed)) {
-      errorMsg.value = '拖拽的内容不是有效的视频链接'
+    const validationError = validateUrl(trimmed)
+    if (validationError) {
+      errorMsg.value = validationError
       return
     }
+    clearLocalVideoFile(true)
     url.value = trimmed
     await parseVideo()
   }
@@ -1095,12 +1614,21 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape' && searchQuery.value) {
     searchQuery.value = ''
   }
+  if (e.key === 'Escape' && receiptDetailsRef.value?.open) {
+    receiptDetailsRef.value.open = false
+  }
+}
+
+function handleGlobalPointerDown(e: PointerEvent): void {
+  const details = receiptDetailsRef.value
+  if (details?.open && !details.contains(e.target as Node)) {
+    details.open = false
+  }
 }
 </script>
 
 <template>
   <div class="h-screen flex flex-col bg-white text-slate-900 select-none overflow-hidden">
-
     <!-- ── 顶部栏 ── -->
     <header class="shrink-0 flex items-center gap-2.5 px-4 py-2 border-b border-slate-200 bg-white">
       <!-- Logo -->
@@ -1124,22 +1652,40 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
         <IconSearch class="w-3.5 h-3.5 text-slate-400 shrink-0" />
         <input
           v-model="url"
-          placeholder="粘贴 B 站 / YouTube 视频链接..."
+          placeholder="粘贴 B 站 / YouTube 视频链接，或选择本地视频..."
           class="flex-1 bg-transparent outline-none text-sm text-slate-800 placeholder:text-slate-400"
+          @input="handleUrlInput"
           @keydown.enter="parseVideo"
           @paste="handleUrlPaste"
         />
-        <span
-          v-if="urlExtractedHint"
-          class="shrink-0 text-xs text-blue-500 whitespace-nowrap"
-        >已自动提取链接</span>
+        <span v-if="urlExtractedHint" class="shrink-0 text-xs text-blue-500 whitespace-nowrap"
+          >已自动提取链接</span
+        >
+        <button
+          class="shrink-0 w-7 h-7 flex items-center justify-center rounded-md text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition-colors"
+          title="选择本地视频文件"
+          @click="openLocalFilePicker"
+        >
+          <IconFolderOpen class="w-4 h-4" />
+        </button>
+        <input
+          ref="localFileInputRef"
+          type="file"
+          class="hidden"
+          :accept="LOCAL_VIDEO_ACCEPT"
+          @change="handleLocalFileInput"
+        />
       </div>
 
       <!-- 解析模式选择器 -->
       <div class="shrink-0 flex bg-slate-100 rounded-lg p-[3px] gap-[2px]">
         <button
           @click="skipVideo = true"
-          :class="skipVideo ? 'bg-white shadow-sm text-slate-800 font-medium' : 'text-slate-400 hover:text-slate-600'"
+          :class="
+            skipVideo
+              ? 'bg-white shadow-sm text-slate-800 font-medium'
+              : 'text-slate-400 hover:text-slate-600'
+          "
           class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs transition-all duration-150"
           title="仅通过字幕/语音转文字解析，速度快"
         >
@@ -1148,7 +1694,11 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
         </button>
         <button
           @click="skipVideo = false"
-          :class="!skipVideo ? 'bg-white shadow-sm text-slate-800 font-medium' : 'text-slate-400 hover:text-slate-600'"
+          :class="
+            !skipVideo
+              ? 'bg-white shadow-sm text-slate-800 font-medium'
+              : 'text-slate-400 hover:text-slate-600'
+          "
           class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs transition-all duration-150"
           title="额外使用 GLM-4V 对视频画面逐帧理解，更准确但耗时更长"
         >
@@ -1157,49 +1707,216 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
         </button>
       </div>
 
+      <!-- LLM 模型选择 -->
+      <label
+        class="shrink-0 flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] text-slate-400"
+        title="用于时间轴结构化、视频对话和导出标题生成"
+      >
+        <span>模型</span>
+        <select
+          v-model="llmProvider"
+          class="max-w-[116px] cursor-pointer bg-transparent text-xs font-medium text-slate-700 outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+          aria-label="选择内容分析模型"
+        >
+          <option value="deepseek">DeepSeek</option>
+          <option value="gpt-5.6-sol">GPT-5.6 Sol</option>
+        </select>
+      </label>
+
+      <!-- 最近一次真实模型调用凭证 -->
+      <details v-if="lastLlmReceipt" ref="receiptDetailsRef" class="relative shrink-0">
+        <summary
+          class="flex cursor-pointer list-none items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 [&::-webkit-details-marker]:hidden"
+          :class="
+            lastLlmReceipt.status === 'success'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+              : 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'
+          "
+          title="查看最近一次模型调用的请求与响应凭证"
+        >
+          <IconShieldCheck class="h-3.5 w-3.5" />
+          调用凭证
+        </summary>
+
+        <div
+          class="absolute right-0 top-full z-50 mt-2 w-[390px] rounded-xl border border-slate-200 bg-white p-4 shadow-xl"
+        >
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <p class="text-sm font-semibold text-slate-800">模型调用凭证</p>
+              <p class="mt-0.5 text-[11px] text-slate-400">{{ lastLlmReceipt.purpose }}</p>
+            </div>
+            <span
+              class="rounded-full px-2 py-0.5 text-[10px] font-medium"
+              :class="
+                lastLlmReceipt.status === 'success'
+                  ? 'bg-emerald-100 text-emerald-700'
+                  : 'bg-amber-100 text-amber-700'
+              "
+            >
+              {{ lastLlmReceipt.status === 'success' ? '接口已响应' : '本地降级' }}
+            </span>
+          </div>
+
+          <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
+            <div>
+              <dt class="text-[10px] text-slate-400">选择的服务</dt>
+              <dd class="mt-0.5 font-medium text-slate-700">
+                {{ getReceiptProviderLabel(lastLlmReceipt.provider) }}
+              </dd>
+            </div>
+            <div>
+              <dt class="text-[10px] text-slate-400">耗时</dt>
+              <dd class="mt-0.5 font-medium text-slate-700">{{ lastLlmReceipt.durationMs }} ms</dd>
+            </div>
+            <div>
+              <dt class="text-[10px] text-slate-400">请求模型</dt>
+              <dd class="mt-0.5 select-text font-mono text-[11px] text-slate-700">
+                {{ lastLlmReceipt.requestedModel }}
+              </dd>
+            </div>
+            <div>
+              <dt class="text-[10px] text-slate-400">响应模型</dt>
+              <dd class="mt-0.5 select-text font-mono text-[11px] text-slate-700">
+                {{ lastLlmReceipt.responseModel || '接口未返回' }}
+              </dd>
+            </div>
+            <div class="col-span-2">
+              <dt class="text-[10px] text-slate-400">Endpoint</dt>
+              <dd class="mt-0.5 break-all select-text font-mono text-[10px] text-slate-600">
+                {{ lastLlmReceipt.endpoint || '未建立模型连接' }}
+              </dd>
+            </div>
+            <div class="col-span-2">
+              <dt class="text-[10px] text-slate-400">Request ID</dt>
+              <dd class="mt-0.5 break-all select-text font-mono text-[10px] text-slate-600">
+                {{ lastLlmReceipt.requestId || '接口未提供' }}
+              </dd>
+            </div>
+            <div>
+              <dt class="text-[10px] text-slate-400">推理强度</dt>
+              <dd class="mt-0.5 text-slate-700">
+                {{ lastLlmReceipt.reasoningEffort || '默认' }}
+              </dd>
+            </div>
+            <div>
+              <dt class="text-[10px] text-slate-400">调用时间</dt>
+              <dd class="mt-0.5 text-slate-700">
+                {{ formatReceiptTime(lastLlmReceipt.timestamp) }}
+              </dd>
+            </div>
+          </dl>
+
+          <p class="mt-3 border-t border-slate-100 pt-3 text-[10px] leading-4 text-slate-400">
+            此凭证证明应用向该 Endpoint
+            发送了对应模型参数，并记录接口自报信息；第三方代理的底层模型仍需服务商日志或签名证明。
+          </p>
+        </div>
+      </details>
+
       <!-- 浏览器账号状态（B站 + YouTube 合并） -->
       <div class="relative group/cookie shrink-0">
-        <div class="w-7 h-7 flex items-center justify-center rounded-md bg-slate-50 border border-slate-200 cursor-default transition-colors group-hover/cookie:bg-slate-100">
+        <div
+          class="w-7 h-7 flex items-center justify-center rounded-md bg-slate-50 border border-slate-200 cursor-default transition-colors group-hover/cookie:bg-slate-100"
+        >
           <!-- 加载中：统一转圈 -->
-          <IconLoader2 v-if="cookieCombinedStatus === 'loading'" class="w-3.5 h-3.5 text-slate-400 animate-spin" />
+          <IconLoader2
+            v-if="cookieCombinedStatus === 'loading'"
+            class="w-3.5 h-3.5 text-slate-400 animate-spin"
+          />
           <!-- 加载完成：B站 和 YouTube 各一个状态点 -->
           <div v-else class="flex flex-col gap-[3px]">
             <div class="flex items-center gap-[3px]">
               <span class="text-[6px] font-bold text-slate-400 leading-none w-[7px]">B</span>
               <div
                 class="w-[6px] h-[6px] rounded-full"
-                :class="cookieStatus === 'ok' ? 'bg-emerald-500' : cookieStatus === 'fail' ? 'bg-amber-400' : 'bg-slate-300'"
+                :class="
+                  cookieStatus === 'ok'
+                    ? 'bg-emerald-500'
+                    : cookieStatus === 'fail'
+                      ? 'bg-amber-400'
+                      : 'bg-slate-300'
+                "
               />
             </div>
             <div class="flex items-center gap-[3px]">
               <span class="text-[6px] font-bold text-slate-400 leading-none w-[7px]">Y</span>
               <div
                 class="w-[6px] h-[6px] rounded-full"
-                :class="cookieYtStatus === 'ok' ? 'bg-emerald-500' : cookieYtStatus === 'fail' ? 'bg-amber-400' : 'bg-slate-300'"
+                :class="
+                  cookieYtStatus === 'ok'
+                    ? 'bg-emerald-500'
+                    : cookieYtStatus === 'fail'
+                      ? 'bg-amber-400'
+                      : 'bg-slate-300'
+                "
               />
             </div>
           </div>
         </div>
-        <div class="absolute top-full right-0 mt-2 w-max max-w-[300px] px-3 py-2.5 bg-slate-800 rounded-xl shadow-xl opacity-0 group-hover/cookie:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
+        <div
+          class="absolute top-full right-0 mt-2 w-max max-w-[300px] px-3 py-2.5 bg-slate-800 rounded-xl shadow-xl opacity-0 group-hover/cookie:opacity-100 transition-opacity duration-150 pointer-events-none z-50"
+        >
           <p class="text-xs font-medium text-white leading-snug mb-1.5">浏览器账号</p>
           <div class="flex flex-col gap-1">
             <div class="flex items-center gap-1.5">
-              <div class="w-1.5 h-1.5 rounded-full flex-shrink-0" :class="cookieStatus === 'ok' ? 'bg-emerald-500' : cookieStatus === 'fail' ? 'bg-amber-400' : 'bg-slate-500'" />
-              <span class="text-[11px] leading-snug" :class="cookieStatus === 'ok' ? 'text-slate-200' : 'text-slate-400'">
-                B站：{{ cookieStatus === 'ok' ? `已登录（${cookieBrowser}）` : cookieStatus === 'fail' ? '未检测到账号' : '检测中...' }}
+              <div
+                class="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                :class="
+                  cookieStatus === 'ok'
+                    ? 'bg-emerald-500'
+                    : cookieStatus === 'fail'
+                      ? 'bg-amber-400'
+                      : 'bg-slate-500'
+                "
+              />
+              <span
+                class="text-[11px] leading-snug"
+                :class="cookieStatus === 'ok' ? 'text-slate-200' : 'text-slate-400'"
+              >
+                B站：{{
+                  cookieStatus === 'ok'
+                    ? `已登录（${cookieBrowser}）`
+                    : cookieStatus === 'fail'
+                      ? '未检测到账号'
+                      : '检测中...'
+                }}
               </span>
             </div>
             <div class="flex items-center gap-1.5">
-              <div class="w-1.5 h-1.5 rounded-full flex-shrink-0" :class="cookieYtStatus === 'ok' ? 'bg-emerald-500' : cookieYtStatus === 'fail' ? 'bg-amber-400' : 'bg-slate-500'" />
-              <span class="text-[11px] leading-snug" :class="cookieYtStatus === 'ok' ? 'text-slate-200' : 'text-slate-400'">
-                YouTube：{{ cookieYtStatus === 'ok' ? `已登录（${cookieYtBrowser}）` : cookieYtStatus === 'fail' ? '未检测到账号' : '检测中...' }}
+              <div
+                class="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                :class="
+                  cookieYtStatus === 'ok'
+                    ? 'bg-emerald-500'
+                    : cookieYtStatus === 'fail'
+                      ? 'bg-amber-400'
+                      : 'bg-slate-500'
+                "
+              />
+              <span
+                class="text-[11px] leading-snug"
+                :class="cookieYtStatus === 'ok' ? 'text-slate-200' : 'text-slate-400'"
+              >
+                YouTube：{{
+                  cookieYtStatus === 'ok'
+                    ? `已登录（${cookieYtBrowser}）`
+                    : cookieYtStatus === 'fail'
+                      ? '未检测到账号'
+                      : '检测中...'
+                }}
               </span>
             </div>
           </div>
-          <p v-if="cookieStatus === 'fail' || cookieYtStatus === 'fail'" class="text-[10px] text-slate-500 mt-1.5 leading-snug">
+          <p
+            v-if="cookieStatus === 'fail' || cookieYtStatus === 'fail'"
+            class="text-[10px] text-slate-500 mt-1.5 leading-snug"
+          >
             请先在 Edge / Chrome / Firefox / Safari 中登录
           </p>
-          <div class="absolute bottom-full right-2.5 border-[5px] border-transparent border-b-slate-800" />
+          <div
+            class="absolute bottom-full right-2.5 border-[5px] border-transparent border-b-slate-800"
+          />
         </div>
       </div>
 
@@ -1218,12 +1935,14 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
         <div
           v-if="showHistoryPanel"
           class="absolute top-full right-0 mt-2 w-80 bg-white rounded-xl shadow-xl border border-slate-200 z-50 overflow-hidden flex flex-col"
-          style="max-height: 400px;"
+          style="max-height: 400px"
         >
           <!-- 搜索框 -->
           <div class="p-2 border-b border-slate-100 shrink-0">
             <div class="relative">
-              <IconSearch class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+              <IconSearch
+                class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400"
+              />
               <input
                 v-model="historySearch"
                 placeholder="搜索历史..."
@@ -1233,7 +1952,7 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
           </div>
 
           <!-- 历史列表 -->
-          <div class="flex-1 overflow-y-auto p-1" style="min-height: 100px; max-height: 320px;">
+          <div class="flex-1 overflow-y-auto p-1" style="min-height: 100px; max-height: 320px">
             <!-- 有数据时显示列表 -->
             <template v-if="filteredHistory.length > 0">
               <div
@@ -1243,10 +1962,22 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
                 class="flex items-center gap-2 p-2 rounded-lg hover:bg-slate-50 cursor-pointer group"
               >
                 <!-- 平台图标 -->
+                <div
+                  v-if="item.platform === 'local'"
+                  class="w-5 h-5 rounded bg-slate-100 text-slate-400 flex items-center justify-center shrink-0"
+                >
+                  <IconVideo class="w-3.5 h-3.5" />
+                </div>
                 <img
+                  v-else
                   :src="getPlatformIcon(item.platform)"
                   class="w-5 h-5 rounded"
-                  @error="(e) => { const t = e.target as HTMLImageElement; if (t) t.style.display='none' }"
+                  @error="
+                    (e) => {
+                      const t = e.target as HTMLImageElement
+                      if (t) t.style.display = 'none'
+                    }
+                  "
                 />
 
                 <!-- 信息 -->
@@ -1320,7 +2051,11 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
         @click="pasteAndParse"
         :disabled="loading"
         class="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 transition-colors"
-        :class="loading ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-blue-500 hover:bg-blue-50'"
+        :class="
+          loading
+            ? 'text-slate-200 cursor-not-allowed'
+            : 'text-slate-400 hover:text-blue-500 hover:bg-blue-50'
+        "
         title="从剪贴板粘贴链接并解析"
       >
         <IconClipboard class="w-4 h-4" />
@@ -1338,11 +2073,12 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
 
     <!-- ── 主体 ── -->
     <main class="flex-1 flex overflow-hidden">
-
       <!-- 左：视频播放器 -->
-      <div class="flex-1 bg-slate-100 flex items-center justify-center relative min-w-0 overflow-hidden">
+      <div
+        class="flex-1 bg-slate-100 flex items-center justify-center relative min-w-0 overflow-hidden"
+      >
         <webview
-          v-if="videoId"
+          v-if="sourceMode === 'url' && videoId"
           ref="webviewRef"
           :src="videoUrl"
           :partition="webviewSession"
@@ -1354,11 +2090,23 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
           @dom-ready="onWebviewDomReady"
         />
 
+        <LocalVideoPlayer
+          v-else-if="sourceMode === 'local' && selectedLocalFile"
+          ref="localPlayerRef"
+          :key="selectedLocalFile.path"
+          :src="selectedLocalFile.previewUrl"
+          :title="selectedLocalFile.name"
+          :status="localPlaybackStatus"
+          :progress="localPlaybackProgress"
+          :message="localPlaybackMessage"
+          @playback-error="handleLocalPlaybackError"
+        />
+
         <!-- 空状态 -->
-        <div v-if="!videoId" class="text-center pointer-events-none">
+        <div v-if="sourceMode === 'url' && !videoId" class="text-center pointer-events-none">
           <IconVideo class="w-16 h-16 mx-auto mb-3 text-slate-300" />
-          <p class="text-sm font-medium text-slate-400">输入 B 站 / YouTube 链接，一键解析</p>
-          <p class="text-xs text-slate-300 mt-1">支持 B 站 BV 号 · YouTube 视频链接</p>
+          <p class="text-sm font-medium text-slate-400">输入链接或选择本地视频，一键解析</p>
+          <p class="text-xs text-slate-300 mt-1">支持 B 站 · YouTube · mp4 / wmv 等本地视频</p>
         </div>
 
         <!-- 遮罩：全屏激活前隐藏初始加载页面 -->
@@ -1369,10 +2117,12 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
           leave-to-class="opacity-0"
         >
           <div
-            v-if="videoId && !isWebFullscreen"
+            v-if="sourceMode === 'url' && videoId && !isWebFullscreen"
             class="absolute inset-0 bg-slate-100 flex flex-col items-center justify-center gap-3 z-10"
           >
-            <div class="w-9 h-9 rounded-full border-[2.5px] border-slate-200 border-t-blue-400 animate-spin" />
+            <div
+              class="w-9 h-9 rounded-full border-[2.5px] border-slate-200 border-t-blue-400 animate-spin"
+            />
             <p class="text-sm text-slate-500 font-medium">正在加载视频...</p>
           </div>
         </Transition>
@@ -1380,38 +2130,75 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
 
       <!-- 右：时间轴 / 对话 -->
       <aside class="w-[380px] shrink-0 flex flex-col border-l border-slate-200 bg-slate-50">
-
         <!-- Tab 标题栏 -->
         <div class="shrink-0 flex items-center border-b border-slate-200 bg-white">
           <button
             @click="activeTab = 'timeline'"
             class="flex items-center gap-1.5 px-4 py-2.5 text-sm border-b-2 transition-colors"
-            :class="activeTab === 'timeline'
-              ? 'border-blue-500 text-blue-600 font-medium'
-              : 'border-transparent text-slate-400 hover:text-slate-600'"
+            :class="
+              activeTab === 'timeline'
+                ? 'border-blue-500 text-blue-600 font-medium'
+                : 'border-transparent text-slate-400 hover:text-slate-600'
+            "
           >
             <IconListDetails class="w-4 h-4" />
             时间轴
             <span
               v-if="timelineChunks.length"
               class="text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full"
-            >{{ timelineChunks.length }}</span>
+              >{{ timelineChunks.length }}</span
+            >
           </button>
-
 
           <button
             @click="activeTab = 'chat'"
             class="flex items-center gap-1.5 px-4 py-2.5 text-sm border-b-2 transition-colors"
-            :class="activeTab === 'chat'
-              ? 'border-blue-500 text-blue-600 font-medium'
-              : 'border-transparent text-slate-400 hover:text-slate-600'"
+            :class="
+              activeTab === 'chat'
+                ? 'border-blue-500 text-blue-600 font-medium'
+                : 'border-transparent text-slate-400 hover:text-slate-600'
+            "
           >
             <IconMessage class="w-4 h-4" />
             对话
             <span
               v-if="chatMessages.length"
               class="text-[10px] bg-blue-500 text-white px-1.5 py-0.5 rounded-full min-w-[18px] text-center"
-            >{{ chatMessages.length }}</span>
+              >{{ chatMessages.length }}</span
+            >
+          </button>
+
+          <label
+            v-if="activeTab === 'timeline' && timelineChunks.length"
+            class="ml-auto flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1.5 text-[11px] text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+            :title="
+              exportTranscriptLineCount
+                ? `包含 ${exportTranscriptLineCount} 条逐句原文记录`
+                : '当前解析结果没有可导出的原文记录'
+            "
+          >
+            <input
+              v-model="includeTranscriptInExport"
+              type="checkbox"
+              class="h-3.5 w-3.5 cursor-pointer accent-blue-500"
+            />
+            原文
+            <span v-if="exportTranscriptLineCount" class="text-[9px] text-slate-300">
+              {{ exportTranscriptLineCount }}
+            </span>
+          </label>
+
+          <button
+            v-if="activeTab === 'timeline' && timelineChunks.length"
+            class="mr-3 flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-slate-400 transition-colors hover:bg-blue-50 hover:text-blue-500 disabled:cursor-not-allowed disabled:text-slate-300"
+            type="button"
+            :disabled="exportingDocument"
+            title="生成总结性标题并导出带水印 PDF 文档"
+            @click="exportTimelineDocument"
+          >
+            <IconLoader2 v-if="exportingDocument" class="w-3.5 h-3.5 animate-spin" />
+            <IconDownload v-else class="w-3.5 h-3.5" />
+            导出
           </button>
 
           <!-- 清空对话按钮（仅对话 tab 且有消息时显示） -->
@@ -1427,7 +2214,6 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
 
         <!-- ── 时间轴面板 ── -->
         <div v-show="activeTab === 'timeline'" class="flex-1 flex flex-col overflow-hidden">
-
           <!-- 空状态 -->
           <div
             v-if="!loading && !timelineChunks.length"
@@ -1446,7 +2232,9 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
             <div
               class="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95 pointer-events-none"
             >
-              <div class="w-8 h-8 rounded-full border-[2.5px] border-slate-200 border-t-blue-400 animate-spin" />
+              <div
+                class="w-8 h-8 rounded-full border-[2.5px] border-slate-200 border-t-blue-400 animate-spin"
+              />
               <div class="text-center space-y-1.5">
                 <p class="text-sm font-medium text-slate-700">正在解析视频内容</p>
                 <p class="text-xs text-slate-400 max-w-[200px] truncate">{{ latestProgress }}</p>
@@ -1456,18 +2244,26 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
             <div
               class="absolute inset-0 flex flex-col opacity-0 group-hover:opacity-100 translate-y-3 group-hover:translate-y-0 transition-all duration-200 ease-out bg-slate-50"
             >
-              <div class="shrink-0 flex items-center gap-2 px-4 py-2.5 border-b border-slate-200 bg-white">
-                <div class="w-3 h-3 rounded-full border-[1.5px] border-slate-200 border-t-blue-400 animate-spin shrink-0" />
+              <div
+                class="shrink-0 flex items-center gap-2 px-4 py-2.5 border-b border-slate-200 bg-white"
+              >
+                <div
+                  class="w-3 h-3 rounded-full border-[1.5px] border-slate-200 border-t-blue-400 animate-spin shrink-0"
+                />
                 <span class="text-xs font-medium text-slate-600">解析进度</span>
                 <span class="ml-auto text-[10px] text-slate-400">{{ progressLog.length }} 行</span>
               </div>
-              <div class="flex-1 overflow-y-auto px-4 py-3 font-mono text-[10px] leading-5 text-slate-400 space-y-0.5">
+              <div
+                class="flex-1 overflow-y-auto px-4 py-3 font-mono text-[10px] leading-5 text-slate-400 space-y-0.5"
+              >
                 <div
                   v-for="(line, i) in progressLog"
                   :key="i"
                   class="break-all whitespace-pre-wrap"
                   :class="i === progressLog.length - 1 ? 'text-slate-700 font-medium' : ''"
-                >{{ line }}</div>
+                >
+                  {{ line }}
+                </div>
                 <div class="h-4" />
               </div>
             </div>
@@ -1489,13 +2285,30 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
             </div>
           </Transition>
 
+          <Transition
+            enter-active-class="transition-all duration-300"
+            leave-active-class="transition-all duration-200"
+            enter-from-class="opacity-0 -translate-y-1"
+            leave-to-class="opacity-0 -translate-y-1"
+          >
+            <div
+              v-if="documentExportMsg"
+              class="shrink-0 flex items-center gap-1.5 border-b border-emerald-100 bg-emerald-50 px-3 py-1.5 text-xs text-emerald-600"
+            >
+              <IconDownload class="w-3 h-3" />
+              <span class="truncate">{{ documentExportMsg }}</span>
+            </div>
+          </Transition>
+
           <!-- 搜索框 -->
           <div
             v-if="timelineChunks.length"
             class="shrink-0 px-3 py-2 border-b border-slate-200 bg-white"
           >
             <div class="relative">
-              <IconSearch class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+              <IconSearch
+                class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400"
+              />
               <input
                 ref="searchInputRef"
                 v-model="searchQuery"
@@ -1542,8 +2355,11 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
                     <span
                       class="text-[11px] font-mono"
                       :class="activeChunkId === chunk.id ? 'text-blue-500' : 'text-slate-400'"
-                    >{{ chunk.startTime }} → {{ chunk.endTime }}</span>
-                    <IconChevronRight class="w-3 h-3 text-slate-300 ml-auto opacity-0 group-hover:opacity-100 transition-opacity" />
+                      >{{ chunk.startTime }} → {{ chunk.endTime }}</span
+                    >
+                    <IconChevronRight
+                      class="w-3 h-3 text-slate-300 ml-auto opacity-0 group-hover:opacity-100 transition-opacity"
+                    />
                   </div>
 
                   <!-- 标题 -->
@@ -1568,7 +2384,9 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
                   <!-- 核心观点 -->
                   <ul v-if="chunk.keyPoints.length" class="space-y-1 mb-2">
                     <li
-                      v-for="(pt, i) in (isCardExpanded(chunk.id) ? chunk.keyPoints : chunk.keyPoints.slice(0, 3))"
+                      v-for="(pt, i) in isCardExpanded(chunk.id)
+                        ? chunk.keyPoints
+                        : chunk.keyPoints.slice(0, 3)"
                       :key="i"
                       class="flex items-start gap-1.5 text-xs text-slate-500"
                     >
@@ -1650,10 +2468,14 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
                       class="flex items-start gap-2 px-3 py-1.5 hover:bg-slate-100 cursor-pointer group/line transition-colors"
                       @click.stop="onTranscriptLineClick(line)"
                     >
-                      <span class="text-[10px] font-mono text-blue-400/70 group-hover/line:text-blue-500 shrink-0 mt-0.5 transition-colors">
+                      <span
+                        class="text-[10px] font-mono text-blue-400/70 group-hover/line:text-blue-500 shrink-0 mt-0.5 transition-colors"
+                      >
                         {{ line.time }}
                       </span>
-                      <span class="text-[11px] text-slate-500 leading-relaxed">{{ line.text }}</span>
+                      <span class="text-[11px] text-slate-500 leading-relaxed">{{
+                        line.text
+                      }}</span>
                     </div>
                   </div>
                 </div>
@@ -1664,10 +2486,8 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
 
         <!-- ── 对话面板 ── -->
         <div v-show="activeTab === 'chat'" class="flex-1 flex flex-col overflow-hidden">
-
           <!-- 消息列表 -->
           <div ref="chatScrollRef" class="flex-1 overflow-y-auto px-3 py-3 space-y-3">
-
             <!-- 空状态 -->
             <div
               v-if="!chatMessages.length && !chatLoading"
@@ -1709,15 +2529,26 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
                   v-if="msg.quotedChunk"
                   class="mb-1 px-2.5 py-2 bg-blue-50 border-l-2 border-blue-300 rounded-r-lg"
                 >
-                  <p class="text-[10px] text-blue-400 font-mono mb-0.5">{{ msg.quotedChunk.startTime }} - {{ msg.quotedChunk.endTime }}</p>
-                  <p class="text-[11px] text-blue-700 font-semibold leading-snug">{{ msg.quotedChunk.title }}</p>
-                  <p v-if="msg.quotedChunk.summary" class="text-[10px] text-blue-600/70 mt-0.5 leading-relaxed line-clamp-2">{{ msg.quotedChunk.summary }}</p>
+                  <p class="text-[10px] text-blue-400 font-mono mb-0.5">
+                    {{ msg.quotedChunk.startTime }} - {{ msg.quotedChunk.endTime }}
+                  </p>
+                  <p class="text-[11px] text-blue-700 font-semibold leading-snug">
+                    {{ msg.quotedChunk.title }}
+                  </p>
+                  <p
+                    v-if="msg.quotedChunk.summary"
+                    class="text-[10px] text-blue-600/70 mt-0.5 leading-relaxed line-clamp-2"
+                  >
+                    {{ msg.quotedChunk.summary }}
+                  </p>
                   <ul v-if="msg.quotedChunk.keyPoints.length" class="mt-1 space-y-0.5">
                     <li
                       v-for="(pt, i) in msg.quotedChunk.keyPoints.slice(0, 2)"
                       :key="i"
                       class="text-[10px] text-blue-500/70 leading-snug line-clamp-1"
-                    >· {{ pt }}</li>
+                    >
+                      · {{ pt }}
+                    </li>
                   </ul>
                 </div>
 
@@ -1735,15 +2566,27 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
                   class="px-3 py-2 text-sm bg-white text-slate-700 border border-slate-200 rounded-2xl rounded-tl-sm"
                 >
                   <!-- 等待第一个 chunk 时显示三点动画（或搜索中状态） -->
-                  <div v-if="msg.streaming && !msg.content" class="flex items-center gap-1.5 py-0.5">
+                  <div
+                    v-if="msg.streaming && !msg.content"
+                    class="flex items-center gap-1.5 py-0.5"
+                  >
                     <template v-if="msg.searchQuery">
                       <IconSearch class="w-3 h-3 text-amber-400 shrink-0" />
-                      <span class="text-xs text-amber-500">正在搜索 <span class="font-medium">{{ msg.searchQuery }}</span>…</span>
+                      <span class="text-xs text-amber-500"
+                        >正在搜索 <span class="font-medium">{{ msg.searchQuery }}</span
+                        >…</span
+                      >
                     </template>
                     <template v-else>
-                      <div class="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce [animation-delay:0ms]" />
-                      <div class="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce [animation-delay:150ms]" />
-                      <div class="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce [animation-delay:300ms]" />
+                      <div
+                        class="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce [animation-delay:0ms]"
+                      />
+                      <div
+                        class="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce [animation-delay:150ms]"
+                      />
+                      <div
+                        class="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce [animation-delay:300ms]"
+                      />
                     </template>
                   </div>
                   <!-- 有内容时渲染 Markdown（流式状态带光标；搜索徽章内嵌于内容流） -->
@@ -1756,7 +2599,6 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
                 </div>
               </div>
             </div>
-
           </div>
 
           <!-- 引用预览（输入框上方） -->
@@ -1766,15 +2608,26 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
           >
             <div class="flex items-start gap-2">
               <div class="flex-1 min-w-0">
-                <p class="text-[10px] text-blue-400 font-mono mb-0.5">{{ quotedChunk.startTime }} - {{ quotedChunk.endTime }}</p>
-                <p class="text-xs text-blue-700 font-semibold leading-snug">{{ quotedChunk.title }}</p>
-                <p v-if="quotedChunk.summary" class="text-[11px] text-blue-600/80 mt-1 leading-relaxed line-clamp-2">{{ quotedChunk.summary }}</p>
+                <p class="text-[10px] text-blue-400 font-mono mb-0.5">
+                  {{ quotedChunk.startTime }} - {{ quotedChunk.endTime }}
+                </p>
+                <p class="text-xs text-blue-700 font-semibold leading-snug">
+                  {{ quotedChunk.title }}
+                </p>
+                <p
+                  v-if="quotedChunk.summary"
+                  class="text-[11px] text-blue-600/80 mt-1 leading-relaxed line-clamp-2"
+                >
+                  {{ quotedChunk.summary }}
+                </p>
                 <ul v-if="quotedChunk.keyPoints.length" class="mt-1 space-y-0.5">
                   <li
                     v-for="(pt, i) in quotedChunk.keyPoints.slice(0, 2)"
                     :key="i"
                     class="text-[10px] text-blue-500/70 leading-snug line-clamp-1"
-                  >· {{ pt }}</li>
+                  >
+                    · {{ pt }}
+                  </li>
                 </ul>
               </div>
               <button
@@ -1790,20 +2643,30 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
           <div class="shrink-0 p-3 border-t border-slate-200 bg-white">
             <div
               class="flex items-end gap-2 rounded-xl border px-3 py-2.5 transition-colors"
-              :class="chatDisabled
-                ? 'bg-slate-50 border-slate-200'
-                : 'bg-slate-50 border-slate-200 focus-within:border-blue-400 focus-within:bg-white'"
+              :class="
+                chatDisabled
+                  ? 'bg-slate-50 border-slate-200'
+                  : 'bg-slate-50 border-slate-200 focus-within:border-blue-400 focus-within:bg-white'
+              "
             >
               <textarea
                 ref="chatInputRef"
                 v-model="chatInput"
-                :placeholder="loading ? '视频解析中，请稍候...' : chatDisabled ? '请先解析视频' : '询问视频内容...'"
+                :placeholder="
+                  loading
+                    ? '视频解析中，请稍候...'
+                    : chatDisabled
+                      ? '请先解析视频'
+                      : '询问视频内容...'
+                "
                 :disabled="chatDisabled"
                 rows="2"
                 class="flex-1 bg-transparent outline-none text-sm resize-none max-h-28 leading-relaxed"
-                :class="chatDisabled
-                  ? 'text-slate-300 placeholder:text-slate-300 cursor-not-allowed'
-                  : 'text-slate-800 placeholder:text-slate-400'"
+                :class="
+                  chatDisabled
+                    ? 'text-slate-300 placeholder:text-slate-300 cursor-not-allowed'
+                    : 'text-slate-800 placeholder:text-slate-400'
+                "
                 @keydown.enter.exact.prevent="sendChat"
                 @input="autoResizeTextarea"
               />
@@ -1820,10 +2683,11 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
                 <IconSend class="w-3.5 h-3.5" />
               </button>
             </div>
-            <p class="text-[10px] text-slate-300 mt-1.5 text-center">Enter 发送 · Shift+Enter 换行</p>
+            <p class="text-[10px] text-slate-300 mt-1.5 text-center">
+              Enter 发送 · Shift+Enter 换行
+            </p>
           </div>
         </div>
-
       </aside>
     </main>
 
@@ -1841,7 +2705,9 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
         <IconClipboard class="w-4 h-4 text-blue-400" />
         <div class="flex flex-col">
           <span class="text-sm font-medium">检测到视频链接</span>
-          <span class="text-xs text-slate-400 truncate max-w-[200px]">{{ clipboardDetectedUrl }}</span>
+          <span class="text-xs text-slate-400 truncate max-w-[200px]">{{
+            clipboardDetectedUrl
+          }}</span>
         </div>
         <button
           @click="acceptClipboardUrl"
@@ -1862,34 +2728,81 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
 
 <style>
 /* ── 助手消息 Markdown 样式（v-html 内容不受 scoped 限制） ── */
-.markdown-body { font-size: 0.875rem; line-height: 1.625; word-break: break-word; }
-.markdown-body > *:first-child { margin-top: 0 !important; }
-.markdown-body > *:last-child { margin-bottom: 0 !important; }
-.markdown-body p { margin: 0 0 0.5em; }
-.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 {
-  font-weight: 600; line-height: 1.3; margin: 0.75em 0 0.3em;
+.markdown-body {
+  font-size: 0.875rem;
+  line-height: 1.625;
+  word-break: break-word;
 }
-.markdown-body h1 { font-size: 1.1em; }
-.markdown-body h2 { font-size: 1.05em; }
-.markdown-body h3, .markdown-body h4 { font-size: 1em; }
-.markdown-body ul, .markdown-body ol { padding-left: 1.4em; margin: 0.4em 0; }
-.markdown-body li { margin: 0.2em 0; }
-.markdown-body li > p { margin: 0; }
+.markdown-body > *:first-child {
+  margin-top: 0 !important;
+}
+.markdown-body > *:last-child {
+  margin-bottom: 0 !important;
+}
+.markdown-body p {
+  margin: 0 0 0.5em;
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 0.75em 0 0.3em;
+}
+.markdown-body h1 {
+  font-size: 1.1em;
+}
+.markdown-body h2 {
+  font-size: 1.05em;
+}
+.markdown-body h3,
+.markdown-body h4 {
+  font-size: 1em;
+}
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.4em;
+  margin: 0.4em 0;
+}
+.markdown-body li {
+  margin: 0.2em 0;
+}
+.markdown-body li > p {
+  margin: 0;
+}
 .markdown-body code {
-  background: rgba(0, 0, 0, 0.07); padding: 0.15em 0.35em;
-  border-radius: 4px; font-size: 0.82em; font-family: ui-monospace, 'Cascadia Code', monospace;
+  background: rgba(0, 0, 0, 0.07);
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+  font-size: 0.82em;
+  font-family: ui-monospace, 'Cascadia Code', monospace;
 }
 .markdown-body pre {
-  background: rgba(0, 0, 0, 0.06); padding: 0.75em 1em;
-  border-radius: 8px; overflow-x: auto; margin: 0.5em 0;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0.75em 1em;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 0.5em 0;
 }
-.markdown-body pre code { background: none; padding: 0; font-size: 0.83em; }
+.markdown-body pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.83em;
+}
 .markdown-body blockquote {
-  border-left: 3px solid #94a3b8; padding-left: 0.75em;
-  color: #64748b; margin: 0.5em 0;
+  border-left: 3px solid #94a3b8;
+  padding-left: 0.75em;
+  color: #64748b;
+  margin: 0.5em 0;
 }
-.markdown-body blockquote > p { margin: 0; }
-.markdown-body a { color: #3b82f6; text-decoration: underline; }
+.markdown-body blockquote > p {
+  margin: 0;
+}
+.markdown-body a {
+  color: #3b82f6;
+  text-decoration: underline;
+}
 .markdown-body .ts-link {
   display: inline-block;
   color: #3b82f6;
@@ -1907,17 +2820,45 @@ function handleGlobalKeydown(e: KeyboardEvent): void {
   background: #dbeafe;
   text-decoration: underline;
 }
-.markdown-body hr { border: none; border-top: 1px solid #e2e8f0; margin: 0.75em 0; }
-.markdown-body table { border-collapse: collapse; width: 100%; margin: 0.5em 0; font-size: 0.85em; }
-.markdown-body th, .markdown-body td { border: 1px solid #e2e8f0; padding: 0.35em 0.6em; text-align: left; }
-.markdown-body th { background: rgba(0, 0, 0, 0.04); font-weight: 600; }
-.markdown-body strong { font-weight: 600; }
-.markdown-body em { font-style: italic; }
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid #e2e8f0;
+  margin: 0.75em 0;
+}
+.markdown-body table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5em 0;
+  font-size: 0.85em;
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid #e2e8f0;
+  padding: 0.35em 0.6em;
+  text-align: left;
+}
+.markdown-body th {
+  background: rgba(0, 0, 0, 0.04);
+  font-weight: 600;
+}
+.markdown-body strong {
+  font-weight: 600;
+}
+.markdown-body em {
+  font-style: italic;
+}
 
 /* 流式光标 */
-.md-cursor { animation: md-cursor-blink 0.8s step-end infinite; }
+.md-cursor {
+  animation: md-cursor-blink 0.8s step-end infinite;
+}
 @keyframes md-cursor-blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
 }
 </style>

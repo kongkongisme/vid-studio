@@ -1,7 +1,25 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 
+type LlmProvider = 'deepseek' | 'gpt-5.6-sol'
+
+interface LlmCallReceipt {
+  purpose: string
+  provider: LlmProvider
+  requestedModel: string
+  responseModel?: string
+  endpoint: string
+  requestId?: string
+  timestamp: string
+  durationMs: number
+  reasoningEffort?: string
+  status: 'success' | 'fallback'
+  error?: string
+}
+
 interface ParseOptions {
   skipVideo?: boolean
+  skipDanmaku?: boolean
+  llmProvider?: LlmProvider
 }
 
 interface DanmakuData {
@@ -28,13 +46,43 @@ interface HistoryItem {
   id: string
   url: string
   title: string
-  platform: 'bilibili' | 'youtube'
+  platform: 'bilibili' | 'youtube' | 'local'
   thumbnail?: string
   mode: 'asr' | 'visual'
   createdAt: number
   favorited: boolean
   outputPath?: string
   duration?: number
+  filePath?: string
+}
+
+interface LocalPlaybackProgress {
+  filePath: string
+  status: 'converting' | 'ready' | 'error'
+  progress: number
+  message: string
+}
+
+interface TimelineExportChunk {
+  startTime: string
+  endTime: string
+  title: string
+  summary: string
+  keyPoints: string[]
+  tags: string[]
+  transcript: { time: string; text: string }[]
+}
+
+interface TimelineExportPayload {
+  title: string
+  sourceLabel: string
+  modeLabel: string
+  exportedAt: string
+  highlightTerm?: string
+  includeTranscript: boolean
+  llmProvider: LlmProvider
+  llmReceipt?: LlmCallReceipt
+  chunks: TimelineExportChunk[]
 }
 
 declare global {
@@ -46,12 +94,41 @@ declare global {
       parseVideo: (
         url: string,
         options?: ParseOptions
-      ) => Promise<{ success: boolean; output?: string; danmaku?: DanmakuData | null; error?: string }>
+      ) => Promise<{
+        success: boolean
+        output?: string
+        danmaku?: DanmakuData | null
+        llmReceipt?: LlmCallReceipt
+        error?: string
+      }>
+      parseLocalVideo?: (
+        filePath: string,
+        options?: ParseOptions
+      ) => Promise<{
+        success: boolean
+        output?: string
+        danmaku?: DanmakuData | null
+        llmReceipt?: LlmCallReceipt
+        error?: string
+      }>
+      getPathForFile?: (file: File) => string
+      prepareLocalVideoPlayback?: (
+        filePath: string,
+        forceProxy?: boolean
+      ) => Promise<{
+        success: boolean
+        url?: string
+        needsProxy?: boolean
+        message?: string
+        error?: string
+      }>
+      onLocalPlaybackProgress?: (callback: (progress: LocalPlaybackProgress) => void) => () => void
       stopParse: () => Promise<void>
       onParseProgress: (callback: (line: string) => void) => () => void
       chatWithVideo: (
-        messages: ApiChatMessage[]
-      ) => Promise<{ success: boolean; error?: string }>
+        messages: ApiChatMessage[],
+        provider: LlmProvider
+      ) => Promise<{ success: boolean; llmReceipt?: LlmCallReceipt; error?: string }>
       onChatStreamChunk: (callback: (delta: string) => void) => () => void
       onChatSearchQuery: (callback: (query: string) => void) => () => void
       // 历史管理
@@ -60,6 +137,14 @@ declare global {
       toggleFavorite: (id: string) => Promise<void>
       deleteHistory: (id: string) => Promise<void>
       readFile: (path: string) => Promise<string | null>
+      exportTimelineDocument?: (payload: TimelineExportPayload) => Promise<{
+        success: boolean
+        path?: string
+        title?: string
+        llmReceipt?: LlmCallReceipt
+        canceled?: boolean
+        error?: string
+      }>
       // 缓存管理
       setCache: (url: string, output: string) => Promise<void>
       getCache: (url: string) => Promise<string | null>

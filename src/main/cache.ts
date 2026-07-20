@@ -15,7 +15,7 @@ function getDb(): InstanceType<typeof DatabaseSync> {
     db = new DatabaseSync(dbPath)
     // 应用退出前关闭数据库，确保写入完整性
     app.once('will-quit', () => {
-      // @ts-ignore
+      // @ts-ignore: close() is available at runtime but missing from current node:sqlite types.
       db?.close()
       db = null
     })

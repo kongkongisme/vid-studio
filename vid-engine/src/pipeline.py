@@ -1,5 +1,7 @@
 """处理管道：编排从下载到输出的完整流程"""
+import hashlib
 import json
+import subprocess
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -28,6 +30,7 @@ class PipelineOptions:
     fresh: bool = False                # 清除断点缓存，强制全量重跑（优先于 resume）
     no_cache: bool = False             # 禁用 embedding 缓存
     skip_danmaku: bool = False         # 跳过弹幕获取
+    local_file: bool = False           # 输入为本地视频文件路径
 
 
 def _adaptive_seg_params(duration_seconds: int) -> dict:
@@ -56,6 +59,123 @@ def _fetch_meta(downloader: VideoDownloader, url: str) -> Tuple[VideoMeta, Optio
     print(f"  标题：{meta.title}")
     print(f"  时长：{meta.duration}秒  UP主：{meta.uploader}")
     return meta, raw_info
+
+
+def _local_video_id(video_path: Path) -> str:
+    """为本地视频生成稳定 ID，用于断点缓存等内部标识。"""
+    key = str(video_path.resolve())
+    return f"local_{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _probe_local_duration(video_path: Path) -> int:
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(video_path),
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError as e:
+        raise RuntimeError("未找到 ffprobe，请先安装 ffmpeg/ffprobe") from e
+
+    if result.returncode != 0:
+        raise RuntimeError(f"无法读取本地视频信息：{result.stderr.strip()}")
+
+    try:
+        return int(float(result.stdout.strip()))
+    except ValueError as e:
+        raise RuntimeError("无法读取本地视频时长，请确认文件是可解析的视频格式") from e
+
+
+def _run_ffmpeg_with_progress(cmd: List[str], duration_seconds: int, error_prefix: str) -> None:
+    """运行 ffmpeg 并把 -progress 输出转成人类可读进度。"""
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError("未找到 ffmpeg，请先安装 ffmpeg") from e
+
+    error_lines: List[str] = []
+    last_percent = -10
+    total = max(duration_seconds, 1)
+
+    if proc.stdout:
+        for raw_line in proc.stdout:
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            if line.startswith("out_time_ms="):
+                try:
+                    elapsed = int(line.split("=", 1)[1]) / 1_000_000
+                except ValueError:
+                    continue
+                percent = min(100, int((elapsed / total) * 100))
+                if percent >= last_percent + 10 or percent == 100:
+                    print(f"  提取音频进度：{percent}%", flush=True)
+                    last_percent = percent
+                continue
+
+            if line.startswith("progress="):
+                continue
+
+            error_lines.append(line)
+
+    code = proc.wait()
+    if code != 0:
+        detail = "\n".join(error_lines[-10:]) or f"ffmpeg 退出码 {code}"
+        raise RuntimeError(f"{error_prefix}：{detail}")
+
+
+def _fetch_local_meta(file_path: str) -> Tuple[VideoMeta, Optional[dict]]:
+    """读取本地视频元信息。"""
+    print("读取本地视频信息...")
+    video_path = Path(file_path).expanduser()
+    if not video_path.exists() or not video_path.is_file():
+        raise RuntimeError(f"本地视频文件不存在：{video_path}")
+
+    meta = VideoMeta(
+        id=_local_video_id(video_path),
+        title=video_path.stem,
+        duration=_probe_local_duration(video_path),
+        uploader="本地文件",
+        language="",
+    )
+    print(f"  标题：{meta.title}")
+    print(f"  时长：{meta.duration}秒  来源：本地文件")
+    return meta, None
+
+
+def _extract_local_audio(file_path: str, work_dir: str) -> str:
+    """从本地视频提取 128kbps mp3 音频，返回音频路径。"""
+    video_path = Path(file_path).expanduser()
+    audio_path = Path(work_dir) / f"{video_path.stem}.mp3"
+    duration = _probe_local_duration(video_path)
+    cmd = [
+        "ffmpeg", "-y",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-fflags", "+genpts",
+        "-i", str(video_path),
+        "-map", "0:a:0",
+        "-vn",
+        "-acodec", "libmp3lame",
+        "-b:a", "128k",
+        "-progress", "pipe:1",
+        "-nostats",
+        str(audio_path),
+    ]
+
+    _run_ffmpeg_with_progress(cmd, duration, "ffmpeg 提取音频失败")
+    if not audio_path.exists():
+        raise RuntimeError("ffmpeg 未生成音频文件")
+    return str(audio_path)
 
 
 def _run_video_understanding(
@@ -88,6 +208,27 @@ def _run_video_understanding(
         return None, None
 
 
+def _run_local_video_understanding(file_path: str) -> Tuple[Optional[str], Optional[str]]:
+    """对本地视频做全局视觉分析。"""
+    try:
+        vu = VideoUnderstanding()
+    except ValueError:
+        print("  未配置 ZHIPUAI_API_KEY，跳过视频理解")
+        return None, None
+
+    try:
+        print("  正在调用 GLM-4V 视频理解...")
+        analysis = vu.analyze_local(file_path)
+        if analysis:
+            print("  视频理解完成")
+        else:
+            print("  视频理解返回空，跳过")
+        return analysis, file_path
+    except Exception as e:
+        print(f"  视频理解失败（{e}），跳过")
+        return None, None
+
+
 def _get_segments(
     downloader: VideoDownloader, url: str, primary_lang: str = ''
 ) -> List[SubtitleSegment]:
@@ -108,6 +249,21 @@ def _get_segments(
     try:
         audio_file = downloader.download_audio(url)
         print(f"  音频已下载：{Path(audio_file).name}")
+        asr = ASRProcessor()
+        print("  正在调用 ASR API...")
+        segments = asr.transcribe(audio_file)
+        print(f"  识别到 {len(segments)} 个片段")
+        return segments
+    except Exception as e:
+        raise RuntimeError(f"语音识别失败（{e}）") from e
+
+
+def _get_local_segments(file_path: str, work_dir: str) -> List[SubtitleSegment]:
+    """从本地视频提取音频并进行 ASR。"""
+    print("  提取本地视频音频进行语音识别...")
+    try:
+        audio_file = _extract_local_audio(file_path, work_dir)
+        print(f"  音频已提取：{Path(audio_file).name}")
         asr = ASRProcessor()
         print("  正在调用 ASR API...")
         segments = asr.transcribe(audio_file)
@@ -178,7 +334,10 @@ def run(url: str, output_path: str, options: Optional[PipelineOptions] = None) -
 
         # 1. 元信息
         try:
-            meta, raw_info = _fetch_meta(downloader, url)
+            if options.local_file:
+                meta, raw_info = _fetch_local_meta(url)
+            else:
+                meta, raw_info = _fetch_meta(downloader, url)
         except RuntimeError as e:
             print(f"错误：{e}")
             sys.exit(1)
@@ -188,7 +347,30 @@ def run(url: str, output_path: str, options: Optional[PipelineOptions] = None) -
         video_file: Optional[str] = None
         segments: List[SubtitleSegment] = []
 
-        if options.skip_video:
+        if options.local_file:
+            if options.skip_video:
+                print("\n已跳过视频理解（--skip-video）")
+                try:
+                    segments = _get_local_segments(url, tmp_dir)
+                except RuntimeError as e:
+                    print(f"错误：{e}")
+                    sys.exit(1)
+                danmaku_data = None
+            else:
+                print("\n并行执行本地视频理解 + 语音识别...")
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    vu_future = executor.submit(_run_local_video_understanding, url)
+                    seg_future = executor.submit(_get_local_segments, url, tmp_dir)
+
+                    try:
+                        segments = seg_future.result()
+                    except RuntimeError as e:
+                        print(f"错误：{e}")
+                        sys.exit(1)
+
+                    video_analysis, video_file = vu_future.result()
+                    danmaku_data = None
+        elif options.skip_video:
             print("\n已跳过视频理解（--skip-video）")
             print("\n尝试获取字幕...")
             try:

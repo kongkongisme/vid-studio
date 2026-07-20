@@ -1,12 +1,14 @@
-"""DeepSeek LLM 调用：对每个时间块生成结构化知识时间轴
+"""LLM 调用：对每个时间块生成结构化知识时间轴
 
 特性：
 - 并行处理（ThreadPoolExecutor）
 - 断点续跑（ChunkCheckpoint）
 - 段落级视觉融合（可选）
 """
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 from openai import OpenAI
@@ -75,20 +77,49 @@ UP主：{uploader}
 
 """
 
+_RECEIPT_PREFIX = "__VID_STUDIO_LLM_RECEIPT__"
+
 
 class LLMStructurer:
 
     def __init__(self):
         cfg = get_config()
-        if not cfg.deepseek_api_key:
-            raise ValueError("环境变量 DEEPSEEK_API_KEY 未设置")
+        if not cfg.llm_api_key:
+            key_name = "GPT_API_KEY" if cfg.llm_provider == "gpt-5.6-sol" else "DEEPSEEK_API_KEY"
+            raise ValueError(f"环境变量 {key_name} 未设置")
 
         self.client = OpenAI(
-            api_key=cfg.deepseek_api_key,
+            api_key=cfg.llm_api_key,
             base_url=cfg.llm_base_url,
             timeout=120.0,   # 单次请求最长等待 2 分钟，避免网络挂起无限阻塞
         )
         self.cfg = cfg
+
+    def _emit_call_receipt(self, response, purpose: str, started_at: float) -> None:
+        """向 Electron 主进程输出不含密钥的模型调用凭证。"""
+        base_url = self.cfg.llm_base_url.rstrip("/")
+        endpoint = (
+            base_url
+            if base_url.endswith("/chat/completions")
+            else f"{base_url}/chat/completions"
+        )
+        receipt = {
+            "purpose": purpose,
+            "provider": self.cfg.llm_provider,
+            "requestedModel": self.cfg.llm_model,
+            "responseModel": getattr(response, "model", None) or "",
+            "endpoint": endpoint,
+            "requestId": (
+                getattr(response, "_request_id", None)
+                or getattr(response, "request_id", None)
+                or ""
+            ),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "durationMs": round((time.perf_counter() - started_at) * 1000),
+            "reasoningEffort": self.cfg.llm_reasoning_effort,
+            "status": "success",
+        }
+        print(f"{_RECEIPT_PREFIX}{json.dumps(receipt, ensure_ascii=False)}", flush=True)
 
     def process_chunks_parallel(
         self,
@@ -166,7 +197,7 @@ class LLMStructurer:
         danmaku_context: Optional[str] = None,
         max_retries: int = 3,
     ) -> str:
-        """对单个时间块调用 DeepSeek，返回结构化 Markdown"""
+        """对单个时间块调用当前选择的 LLM，返回结构化 Markdown"""
         # 仅在有实质性视觉信息时附加（过滤掉"无"）
         visual_section = ""
         if visual_context and visual_context.strip() not in ("无", ""):
@@ -186,7 +217,8 @@ class LLMStructurer:
 
         for attempt in range(max_retries):
             try:
-                response = self.client.chat.completions.create(
+                started_at = time.perf_counter()
+                request = dict(
                     model=self.cfg.llm_model,
                     messages=[
                         {
@@ -198,9 +230,16 @@ class LLMStructurer:
                         },
                         {"role": "user", "content": prompt},
                     ],
-                    temperature=self.cfg.llm_temperature,
                     max_tokens=self.cfg.llm_max_tokens,
                 )
+                if self.cfg.llm_reasoning_effort:
+                    request["extra_body"] = {
+                        "reasoning_effort": self.cfg.llm_reasoning_effort,
+                    }
+                else:
+                    request["temperature"] = self.cfg.llm_temperature
+                response = self.client.chat.completions.create(**request)
+                self._emit_call_receipt(response, "时间轴结构化", started_at)
                 return response.choices[0].message.content.strip()
 
             except Exception as e:
@@ -217,12 +256,20 @@ class LLMStructurer:
         """用 DeepSeek 对 GLM-4V 的原始视觉分析做二次提炼，生成更有价值的视频概览"""
         prompt = _REFINE_ANALYSIS_PROMPT.format(raw_analysis=raw_analysis, title=video_title)
         try:
-            response = self.client.chat.completions.create(
+            started_at = time.perf_counter()
+            request = dict(
                 model=self.cfg.llm_model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
                 max_tokens=600,
             )
+            if self.cfg.llm_reasoning_effort:
+                request["extra_body"] = {
+                    "reasoning_effort": self.cfg.llm_reasoning_effort,
+                }
+            else:
+                request["temperature"] = 0.3
+            response = self.client.chat.completions.create(**request)
+            self._emit_call_receipt(response, "视频整体理解提炼", started_at)
             return response.choices[0].message.content.strip()
         except Exception as e:
             print(f"  视频分析提炼失败（{e}），使用原始输出")
