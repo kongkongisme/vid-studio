@@ -55,6 +55,12 @@ def _fetch_meta(downloader: VideoDownloader, url: str) -> Tuple[VideoMeta, Optio
     try:
         meta, raw_info = downloader.get_video_meta_with_info(url)
     except Exception as e:
+        detail = str(e)
+        if "bilibili" in url and "HTTP Error 412" in detail:
+            raise RuntimeError(
+                "B 站拒绝了视频信息请求（HTTP 412）。"
+                "请先在 Edge 或 Chrome 中登录 B 站，再重启应用后重试。"
+            ) from e
         raise RuntimeError(f"无法获取视频信息（{e}）\n请检查 URL 是否正确，网络是否畅通。")
     print(f"  标题：{meta.title}")
     print(f"  时长：{meta.duration}秒  UP主：{meta.uploader}")

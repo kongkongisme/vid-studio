@@ -1,8 +1,10 @@
 """yt-dlp 封装：视频元信息获取、字幕下载、音频提取"""
+import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
 import yt_dlp
+from yt_dlp.cookies import extract_cookies_from_browser
 
 from src.models import VideoMeta
 
@@ -17,14 +19,47 @@ def _build_subtitle_langs(primary_lang: str) -> list:
     return [lang for lang in base if not (lang in seen or seen.add(lang))]  # type: ignore[func-returns-value]
 
 
-def _build_cookie_opts() -> dict:
-    """静默尝试从浏览器读取 Cookie，失败则返回空 dict"""
-    for browser in ["chrome", "firefox", "edge", "safari"]:
+COOKIE_RULES = {
+    "bilibili": {
+        "domains": ("bilibili", "bilivideo", "hdslb", "biliimg"),
+        "login_indicators": {"SESSDATA", "DedeUserID"},
+    },
+    "youtube": {
+        "domains": ("youtube", "ytimg", "googlevideo", "google"),
+        "login_indicators": {"SID", "SAPISID"},
+    },
+}
+
+
+def _site_from_url(url: str) -> Optional[str]:
+    if "bilibili.com" in url or "b23.tv" in url:
+        return "bilibili"
+    if "youtube.com" in url or "youtu.be" in url:
+        return "youtube"
+    return None
+
+
+def _build_cookie_opts(site: Optional[str]) -> dict:
+    """选择真正包含目标站点登录态的浏览器 Cookie。"""
+    if not site or site not in COOKIE_RULES:
+        return {}
+
+    rule = COOKIE_RULES[site]
+    browsers = ["chrome", "edge", "firefox"]
+    if sys.platform == "darwin":
+        browsers.append("safari")
+
+    for browser in browsers:
         try:
-            opts = {"cookiesfrombrowser": (browser,)}
-            with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, **opts}) as ydl:
-                pass
-            return opts
+            jar = extract_cookies_from_browser(browser)
+            site_cookies = [
+                cookie
+                for cookie in jar
+                if any(domain in cookie.domain for domain in rule["domains"])
+            ]
+            names = {cookie.name for cookie in site_cookies}
+            if site_cookies and names & rule["login_indicators"]:
+                return {"cookiesfrombrowser": (browser,)}
         except Exception:
             continue
     return {}
@@ -34,7 +69,7 @@ class VideoDownloader:
 
     def __init__(self, work_dir: str):
         self.work_dir = Path(work_dir)
-        self._cookie_opts = _build_cookie_opts()
+        self._cookie_opts_by_site: dict = {}
 
     @staticmethod
     def _info_to_meta(info: dict) -> "VideoMeta":
@@ -47,7 +82,10 @@ class VideoDownloader:
             language=info.get("language", "") or "",
         )
 
-    def _base_opts(self) -> dict:
+    def _base_opts(self, url: str) -> dict:
+        site = _site_from_url(url)
+        if site not in self._cookie_opts_by_site:
+            self._cookie_opts_by_site[site] = _build_cookie_opts(site)
         return {
             "quiet": True,
             "no_warnings": True,
@@ -55,12 +93,12 @@ class VideoDownloader:
             "socket_timeout": 60,
             "retries": 5,
             "fragment_retries": 5,
-            **self._cookie_opts,
+            **self._cookie_opts_by_site[site],
         }
 
     def get_video_meta(self, url: str) -> VideoMeta:
         """获取视频元信息（不下载文件）"""
-        opts = {**self._base_opts(), "extract_flat": False}
+        opts = {**self._base_opts(url), "extract_flat": False}
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
             return self._info_to_meta(info)
@@ -69,7 +107,7 @@ class VideoDownloader:
         """获取视频元信息，同时返回完整 info 字典（YouTube 含评论）"""
         is_youtube = "youtube.com" in url or "youtu.be" in url
         opts = {
-            **self._base_opts(),
+            **self._base_opts(url),
             "extract_flat": False,
         }
         if is_youtube:
@@ -84,7 +122,7 @@ class VideoDownloader:
         """下载低画质视频文件（360p），用于视频理解模型"""
         outtmpl = str(self.work_dir / "%(id)s.%(ext)s")
         opts = {
-            **self._base_opts(),
+            **self._base_opts(url),
             "quiet": False,
             "format": "bestvideo[height<=360]/bestvideo[height<=480]/bestvideo",
             "outtmpl": outtmpl,
@@ -123,7 +161,7 @@ class VideoDownloader:
         """执行一次字幕下载尝试"""
         outtmpl = str(self.work_dir / "%(id)s.%(ext)s")
         opts = {
-            **self._base_opts(),
+            **self._base_opts(url),
             "skip_download": True,
             "writesubtitles": write_subs,
             "writeautomaticsub": write_auto,
@@ -158,7 +196,7 @@ class VideoDownloader:
         """提取音频为 128kbps mp3，返回文件路径"""
         outtmpl = str(self.work_dir / "%(id)s.%(ext)s")
         opts = {
-            **self._base_opts(),
+            **self._base_opts(url),
             "quiet": False,
             # YouTube DASH 纯音频格式（opus/m4a）会被 403 拒绝，
             # 优先使用格式 18（360p mp4，单文件合并传统格式），
