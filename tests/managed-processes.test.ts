@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { once } from 'node:events'
 import { readFile, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -70,4 +70,60 @@ describe('owned background process trees', () => {
     await processes.stop(job)
     await processes.shutdown()
   })
+
+  it.skipIf(process.platform !== 'darwin')('retries a transient macOS group EPERM', async () => {
+    const processes = new ManagedProcesses()
+    const child = processes.spawn(process.execPath, [
+      '-e',
+      "console.log('ready'); setInterval(() => {}, 1000)"
+    ])
+    const originalKill = process.kill.bind(process)
+    let attempts = 0
+    let mock: ReturnType<typeof vi.spyOn> | undefined
+    try {
+      await once(child.stdout, 'data')
+      mock = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+        if (pid === -child.pid! && signal === 'SIGTERM' && attempts++ === 0) {
+          throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' })
+        }
+        return originalKill(pid, signal)
+      })
+      await processes.stop(child)
+      expect(attempts).toBe(2)
+      expect(child.exitCode !== null || child.signalCode !== null).toBe(true)
+    } finally {
+      mock?.mockRestore()
+      await processes.shutdown()
+    }
+  })
+
+  it.skipIf(process.platform !== 'darwin')(
+    'does not swallow persistent permission failures',
+    async () => {
+      const processes = new ManagedProcesses()
+      const child = processes.spawn(process.execPath, [
+        '-e',
+        "console.log('ready'); setInterval(() => {}, 1000)"
+      ])
+      const originalKill = process.kill.bind(process)
+      let attempts = 0
+      let mock: ReturnType<typeof vi.spyOn> | undefined
+      try {
+        await once(child.stdout, 'data')
+        mock = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+          if (pid === -child.pid!) {
+            attempts++
+            throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' })
+          }
+          return originalKill(pid, signal)
+        })
+        await expect(processes.stop(child)).rejects.toMatchObject({ code: 'EPERM' })
+        expect(attempts).toBe(3)
+        expect(child.exitCode).toBeNull()
+      } finally {
+        mock?.mockRestore()
+        await processes.shutdown()
+      }
+    }
+  )
 })

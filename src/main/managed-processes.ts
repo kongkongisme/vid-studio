@@ -78,21 +78,27 @@ export class ManagedProcesses {
         if (!entry.exited && !entry.closed) throw new Error('无法停止后台进程及其子进程')
       }
     } else {
-      const signalGroup = (signal: NodeJS.Signals | 0): boolean => {
-        try {
-          process.kill(-pid, signal)
-          return true
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false
-          throw error
+      const signalGroup = async (signal: NodeJS.Signals | 0): Promise<boolean> => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            process.kill(-pid, signal)
+            return true
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code
+            if (code === 'ESRCH') return false
+            // Darwin can return EPERM while a group contains only unreaped zombies.
+            // Yield so Node can reap them; persistent permission failures still surface.
+            if (process.platform !== 'darwin' || code !== 'EPERM' || attempt >= 2) throw error
+            await delay(30)
+          }
         }
       }
-      if (signalGroup('SIGTERM')) {
+      if (await signalGroup('SIGTERM')) {
         const deadline = Date.now() + 600
-        while (Date.now() < deadline && signalGroup(0)) await delay(30)
+        while (Date.now() < deadline && (await signalGroup(0))) await delay(30)
         // A parent can exit while an ffmpeg descendant ignores SIGTERM. Keep the group ID
         // until escalation rather than treating the parent's exit as successful cleanup.
-        if (signalGroup(0)) signalGroup('SIGKILL')
+        if (await signalGroup(0)) await signalGroup('SIGKILL')
       }
     }
     const deadline = Date.now() + 1500
