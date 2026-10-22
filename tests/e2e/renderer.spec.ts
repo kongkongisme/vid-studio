@@ -19,6 +19,13 @@ interface MockState {
   saved?: SettingsUpdate
   finishStop?: () => void
   finishParse?: () => void
+  playbackRequests: {
+    filePath: string
+    requestId: string
+    finish: (result: { success: boolean; error?: string }) => void
+  }[]
+  canceledPlaybacks: number
+  emitPlayback?: Parameters<NonNullable<Window['api']['onLocalPlaybackProgress']>>[0]
 }
 declare global {
   interface Window {
@@ -42,6 +49,8 @@ async function installApi(page: Page): Promise<void> {
       cookieImports: 0,
       parseCalls: 0,
       cachedSources: [],
+      playbackRequests: [],
+      canceledPlaybacks: 0,
       failLoad: false,
       deferDiagnosis: false
     }
@@ -106,7 +115,20 @@ async function installApi(page: Page): Promise<void> {
           state.finishStop = resolve
         }),
       onChatEvent: () => () => undefined,
-      onLocalPlaybackProgress: () => () => undefined
+      getPathForFile: (file) => `/mock/${file.name}`,
+      prepareLocalVideoPlayback: (filePath, _forceProxy, requestId) =>
+        new Promise((resolve) => {
+          state.playbackRequests.push({ filePath, requestId: requestId!, finish: resolve })
+        }),
+      cancelLocalVideoPlayback: async () => {
+        state.canceledPlaybacks++
+      },
+      onLocalPlaybackProgress: (callback) => {
+        state.emitPlayback = callback
+        return () => {
+          state.emitPlayback = undefined
+        }
+      }
     }
     Object.defineProperty(window, 'api', { value: api })
   }, settings)
@@ -259,4 +281,59 @@ test('opens the built-in example offline and navigates adjacent chapter boundari
     reader.getByRole('heading', { name: '从看过到记住：三步整理学习笔记' })
   ).toBeVisible()
   expect(await page.evaluate(() => window.mockState.cachedSources)).toHaveLength(1)
+})
+
+test('ignores old playback results for the same file and cancels previews when leaving it', async ({
+  page
+}) => {
+  const file = { name: 'repeat.mp4', mimeType: 'video/mp4', buffer: Buffer.from('invalid video') }
+  const input = page.getByLabel('选择本地视频文件', { exact: true })
+  await input.setInputFiles(file)
+  // The invalid source exercises the automatic fallback as well as the initial request.
+  await expect.poll(() => page.evaluate(() => window.mockState.playbackRequests.length)).toBe(2)
+  await input.setInputFiles(file)
+  await expect.poll(() => page.evaluate(() => window.mockState.playbackRequests.length)).toBe(4)
+  await page.evaluate(() => {
+    const state = window.mockState
+    const old = state.playbackRequests[1]
+    const current = state.playbackRequests[3]
+    state.emitPlayback?.({
+      filePath: current.filePath,
+      requestId: current.requestId,
+      status: 'converting',
+      progress: 35,
+      message: '当前预览 35%'
+    })
+    state.emitPlayback?.({
+      filePath: old.filePath,
+      requestId: old.requestId,
+      status: 'error',
+      progress: 0,
+      message: '过期预览错误'
+    })
+    old.finish({ success: false, error: '过期预览错误' })
+  })
+  await expect(page.getByText('当前预览 35%', { exact: true })).toBeVisible()
+  await expect(page.getByText('过期预览错误')).toHaveCount(0)
+  await page.getByLabel('选择字幕或笔记文件').setInputFiles({
+    name: 'reading.srt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('1\n00:00:01,000 --> 00:00:03,000\n切换到阅读资料。\n')
+  })
+  await expect(page.getByRole('article', { name: '导入资料阅读器' })).toBeVisible()
+  expect(await page.evaluate(() => window.mockState.canceledPlaybacks)).toBeGreaterThan(0)
+  await page.evaluate(() => {
+    const state = window.mockState
+    const current = state.playbackRequests[3]
+    state.emitPlayback?.({
+      filePath: current.filePath,
+      requestId: current.requestId,
+      status: 'error',
+      progress: 0,
+      message: '离开后的旧错误'
+    })
+    current.finish({ success: false, error: '离开后的旧错误' })
+  })
+  await expect(page.getByRole('article', { name: '导入资料阅读器' })).toBeVisible()
+  await expect(page.getByText('离开后的旧错误')).toHaveCount(0)
 })

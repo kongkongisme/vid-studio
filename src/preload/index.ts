@@ -47,6 +47,7 @@ interface CookieImportResult {
 
 interface LocalPlaybackProgress {
   filePath: string
+  requestId: string
   status: 'converting' | 'ready' | 'error'
   progress: number
   message: string
@@ -105,14 +106,18 @@ const api = {
 
   prepareLocalVideoPlayback: (
     filePath: string,
-    forceProxy = false
+    forceProxy = false,
+    requestId = ''
   ): Promise<{
     success: boolean
     url?: string
     needsProxy?: boolean
     message?: string
     error?: string
-  }> => ipcRenderer.invoke('prepare-local-video-playback', filePath, forceProxy),
+    canceled?: boolean
+  }> => ipcRenderer.invoke('prepare-local-video-playback', filePath, forceProxy, requestId),
+
+  cancelLocalVideoPlayback: (): Promise<void> => ipcRenderer.invoke('cancel-local-video-playback'),
 
   onLocalPlaybackProgress: (callback: (progress: LocalPlaybackProgress) => void): (() => void) => {
     const handler = (_: Electron.IpcRendererEvent, progress: LocalPlaybackProgress): void =>

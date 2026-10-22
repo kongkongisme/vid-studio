@@ -69,7 +69,7 @@ jobs:
       - run: npm ci --registry=https://registry.npmjs.org
       - run: npx playwright install-deps chromium
         if: runner.os == 'Linux'
-      - run: npx vitest run tests/managed-processes.test.ts
+      - run: npx vitest run tests/managed-processes.test.ts tests/playback-requests.test.ts
       - run: xvfb-run -a npm run test:electron
         if: runner.os == 'Linux'
       - run: npm run test:electron

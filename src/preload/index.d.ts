@@ -46,6 +46,7 @@ interface CookieImportResult {
 
 interface LocalPlaybackProgress {
   filePath: string
+  requestId: string
   status: 'converting' | 'ready' | 'error'
   progress: number
   message: string
@@ -87,14 +88,17 @@ declare global {
       getPathForFile?: (file: File) => string
       prepareLocalVideoPlayback?: (
         filePath: string,
-        forceProxy?: boolean
+        forceProxy?: boolean,
+        requestId?: string
       ) => Promise<{
         success: boolean
         url?: string
         needsProxy?: boolean
         message?: string
         error?: string
+        canceled?: boolean
       }>
+      cancelLocalVideoPlayback?: () => Promise<void>
       onLocalPlaybackProgress?: (callback: (progress: LocalPlaybackProgress) => void) => () => void
       stopParse: () => Promise<void>
       onParseProgress: (callback: (line: string) => void) => () => void

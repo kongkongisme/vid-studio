@@ -175,6 +175,7 @@ const localPlaybackStatus = ref<'idle' | 'checking' | 'converting' | 'ready' | '
 const localPlaybackProgress = ref(0)
 const localPlaybackMessage = ref('')
 const localPlaybackNeedsProxy = ref(false)
+let localPlaybackRequestId = ''
 const exportingDocument = ref(false)
 const showExportDialog = ref(false)
 const documentExportMsg = ref('')
@@ -377,6 +378,7 @@ function revokeLocalPreview(): void {
 
 function setLocalVideoFile(file: LocalVideoFile, resetAnalysis = true): void {
   revokeLocalPreview()
+  localPlaybackNeedsProxy.value = false
   selectedLocalFile.value = file
   sourceMode.value = 'local'
   url.value = file.name
@@ -389,6 +391,10 @@ function setLocalVideoFile(file: LocalVideoFile, resetAnalysis = true): void {
 }
 
 function clearLocalVideoFile(resetAnalysis = false): void {
+  localPlaybackRequestId = ''
+  void window.api.cancelLocalVideoPlayback?.().catch((error) => {
+    console.error('无法停止本地播放预览', error)
+  })
   revokeLocalPreview()
   selectedLocalFile.value = null
   sourceMode.value = 'url'
@@ -411,6 +417,8 @@ function updateLocalPlaybackUrl(filePath: string, playbackUrl: string): void {
 }
 
 async function prepareLocalPlayback(filePath: string, forceProxy = false): Promise<void> {
+  const requestId = crypto.randomUUID()
+  localPlaybackRequestId = requestId
   const preparePlayback = window.api.prepareLocalVideoPlayback
   if (typeof preparePlayback !== 'function') {
     localPlaybackStatus.value = 'error'
@@ -423,8 +431,9 @@ async function prepareLocalPlayback(filePath: string, forceProxy = false): Promi
   localPlaybackMessage.value = '正在准备本地播放器'
 
   try {
-    const result = await preparePlayback(filePath, forceProxy)
-    if (!selectedLocalFile.value || selectedLocalFile.value.path !== filePath) return
+    const result = await preparePlayback(filePath, forceProxy, requestId)
+    if (localPlaybackRequestId !== requestId || selectedLocalFile.value?.path !== filePath) return
+    if (result.canceled) return
 
     if (result.success && result.url) {
       updateLocalPlaybackUrl(filePath, result.url)
@@ -437,7 +446,7 @@ async function prepareLocalPlayback(filePath: string, forceProxy = false): Promi
       localPlaybackMessage.value = result.error ?? '无法生成可播放预览'
     }
   } catch (e) {
-    if (!selectedLocalFile.value || selectedLocalFile.value.path !== filePath) return
+    if (localPlaybackRequestId !== requestId || selectedLocalFile.value?.path !== filePath) return
     localPlaybackStatus.value = 'error'
     localPlaybackMessage.value = String(e)
   }
@@ -1463,7 +1472,11 @@ onMounted(() => {
 
   if (typeof window.api.onLocalPlaybackProgress === 'function') {
     unsubscribeLocalPlaybackProgress = window.api.onLocalPlaybackProgress((progress) => {
-      if (!selectedLocalFile.value || progress.filePath !== selectedLocalFile.value.path) return
+      if (
+        progress.requestId !== localPlaybackRequestId ||
+        progress.filePath !== selectedLocalFile.value?.path
+      )
+        return
       localPlaybackStatus.value = progress.status
       localPlaybackProgress.value = progress.progress
       localPlaybackMessage.value = progress.message
@@ -1698,6 +1711,7 @@ function handleGlobalPointerDown(e: PointerEvent): void {
           ref="localFileInputRef"
           type="file"
           class="hidden"
+          aria-label="选择本地视频文件"
           :accept="LOCAL_VIDEO_ACCEPT"
           @change="handleLocalFileInput"
         />

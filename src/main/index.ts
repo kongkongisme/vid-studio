@@ -30,6 +30,7 @@ import { extname, join, resolve } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { execSync, type ChildProcess } from 'child_process'
 import { ManagedProcesses } from './managed-processes'
+import { PlaybackRequests, type PlaybackRequest } from './playback-requests'
 import { writeStagedOutput } from './staged-output'
 import { existsSync, mkdirSync, statSync } from 'fs'
 import { readFile, writeFile } from 'fs/promises'
@@ -55,6 +56,7 @@ const vidEnginePath = is.dev
   : join(process.resourcesPath, 'vid-engine')
 
 const backgroundProcesses = new ManagedProcesses()
+const playbackRequests = new PlaybackRequests(backgroundProcesses)
 
 let settingsStore: SettingsStore | null = null
 function getSettingsStore(): SettingsStore {
@@ -412,6 +414,7 @@ interface ParseResult {
 
 interface LocalPlaybackProgress {
   filePath: string
+  requestId: string
   status: 'converting' | 'ready' | 'error'
   progress: number
   message: string
@@ -434,9 +437,10 @@ function getPlaybackProxyPath(filePath: string): string {
 
 function sendPlaybackProgress(
   event: Electron.IpcMainInvokeEvent,
+  request: PlaybackRequest,
   progress: LocalPlaybackProgress
 ): void {
-  if (event.sender.isDestroyed()) return
+  if (request.signal.aborted || event.sender.isDestroyed()) return
   event.sender.send('local-playback-progress', progress)
 }
 
@@ -446,7 +450,7 @@ function parseFfmpegTimeMs(line: string): number | null {
   return Number.isFinite(raw) ? raw : null
 }
 
-function probeDurationSeconds(filePath: string): Promise<number> {
+function probeDurationSeconds(filePath: string, request: PlaybackRequest): Promise<number> {
   return new Promise((resolve) => {
     const args = [
       '-v',
@@ -457,7 +461,7 @@ function probeDurationSeconds(filePath: string): Promise<number> {
       'default=noprint_wrappers=1:nokey=1',
       filePath
     ]
-    const proc = backgroundProcesses.spawn('ffprobe', args)
+    const proc = request.spawn('ffprobe', args)
     let out = ''
     proc.stdout.on('data', (d: Buffer) => {
       out += d.toString()
@@ -472,11 +476,13 @@ function probeDurationSeconds(filePath: string): Promise<number> {
 
 async function runPlaybackTranscode(
   event: Electron.IpcMainInvokeEvent,
+  request: PlaybackRequest,
+  requestId: string,
   filePath: string,
   outputPath: string,
   durationSeconds: number
 ): Promise<void> {
-  if (currentPlaybackProc) await backgroundProcesses.stop(currentPlaybackProc)
+  request.signal.throwIfAborted()
   await writeStagedOutput(
     outputPath,
     (temporaryPath) =>
@@ -516,14 +522,14 @@ async function runPlaybackTranscode(
           temporaryPath
         ]
 
-        const proc = backgroundProcesses.spawn('ffmpeg', args)
-        currentPlaybackProc = proc
+        const proc = request.spawn('ffmpeg', args)
         const total = Math.max(durationSeconds, 1)
         let lastProgress = -5
         let errorText = ''
 
-        sendPlaybackProgress(event, {
+        sendPlaybackProgress(event, request, {
           filePath,
+          requestId,
           status: 'converting',
           progress: 0,
           message: '正在生成可播放预览'
@@ -539,8 +545,9 @@ async function runPlaybackTranscode(
             )
             if (progress >= lastProgress + 5) {
               lastProgress = progress
-              sendPlaybackProgress(event, {
+              sendPlaybackProgress(event, request, {
                 filePath,
+                requestId,
                 status: 'converting',
                 progress,
                 message: `正在生成可播放预览 ${progress}%`
@@ -554,8 +561,7 @@ async function runPlaybackTranscode(
         })
 
         proc.on('close', (code, signal) => {
-          if (currentPlaybackProc === proc) currentPlaybackProc = null
-          if (signal) {
+          if (signal || request.signal.aborted) {
             reject(new Error('已取消生成播放预览'))
             return
           }
@@ -567,13 +573,14 @@ async function runPlaybackTranscode(
         })
 
         proc.on('error', (err: NodeJS.ErrnoException) => {
-          if (currentPlaybackProc === proc) currentPlaybackProc = null
           reject(new Error(err.code === 'ENOENT' ? '未找到 ffmpeg，请先安装 ffmpeg' : err.message))
         })
       })
   )
-  sendPlaybackProgress(event, {
+  request.signal.throwIfAborted()
+  sendPlaybackProgress(event, request, {
     filePath,
+    requestId,
     status: 'ready',
     progress: 100,
     message: '播放预览已就绪'
@@ -675,7 +682,6 @@ let currentParseProc: ChildProcess | null = null
 let parsePreparing = false
 let parseStopping = false
 let parseGeneration = 0
-let currentPlaybackProc: ChildProcess | null = null
 
 async function runParseProcess(
   event: Electron.IpcMainInvokeEvent,
@@ -817,8 +823,11 @@ ipcMain.handle('parse-local-video', async (event, filePath: string, options: Par
 
 ipcMain.handle(
   'prepare-local-video-playback',
-  async (event, filePath: string, forceProxy = false) => {
+  async (event, filePath: string, forceProxy = false, requestId = '') => {
+    const request = playbackRequests.begin()
     try {
+      await request.ready
+      request.signal.throwIfAborted()
       if (!existsSync(filePath)) {
         return { success: false, error: `本地视频文件不存在：${filePath}` }
       }
@@ -834,8 +843,9 @@ ipcMain.handle(
 
       const proxyPath = getPlaybackProxyPath(filePath)
       if (existsSync(proxyPath)) {
-        sendPlaybackProgress(event, {
+        sendPlaybackProgress(event, request, {
           filePath,
+          requestId,
           status: 'ready',
           progress: 100,
           message: '播放预览已就绪'
@@ -848,8 +858,10 @@ ipcMain.handle(
         }
       }
 
-      const duration = await probeDurationSeconds(filePath)
-      await runPlaybackTranscode(event, filePath, proxyPath, duration)
+      const duration = await probeDurationSeconds(filePath, request)
+      request.signal.throwIfAborted()
+      await runPlaybackTranscode(event, request, requestId, filePath, proxyPath, duration)
+      request.signal.throwIfAborted()
 
       return {
         success: true,
@@ -858,8 +870,10 @@ ipcMain.handle(
         message: '播放预览已就绪'
       }
     } catch (e) {
-      sendPlaybackProgress(event, {
+      if (request.signal.aborted) return { success: false, canceled: true }
+      sendPlaybackProgress(event, request, {
         filePath,
+        requestId,
         status: 'error',
         progress: 0,
         message: String(e)
@@ -868,6 +882,8 @@ ipcMain.handle(
     }
   }
 )
+
+ipcMain.handle('cancel-local-video-playback', () => playbackRequests.cancel())
 
 ipcMain.handle(
   'export-timeline-text',
