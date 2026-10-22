@@ -79,7 +79,7 @@ test('real IPC preserves imported sources, notes, exports and preferences across
     await page.getByLabel('选择字幕或笔记文件').setInputFiles({
       name: '离线课程.srt',
       mimeType: 'text/plain',
-      buffer: Buffer.from(subtitle)
+      buffer: Buffer.from('\uFEFF' + subtitle, 'utf16le')
     })
     await expect(page.getByRole('article', { name: '导入资料阅读器' })).toBeVisible()
     await expect(page.getByRole('heading', { name: '离线课程', exact: true })).toBeVisible()

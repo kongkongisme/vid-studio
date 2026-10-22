@@ -34,6 +34,7 @@ import { formatTimecode } from '../../shared/timeline'
 import { buildVideoContext } from '../../shared/chat-context'
 import {
   importTimeline,
+  decodeTimelineBytes,
   documentCacheKey,
   MAX_IMPORT_BYTES,
   IMPORT_EXTENSIONS,
@@ -1046,7 +1047,7 @@ async function importDocumentFile(file: File): Promise<void> {
   errorMsg.value = ''
   try {
     if (file.size > MAX_IMPORT_BYTES) throw new Error('文件过大，请选择不超过 10 MB 的字幕或笔记。')
-    const content = await file.text()
+    const content = decodeTimelineBytes(new Uint8Array(await file.arrayBuffer()))
     const document = importTimeline(file.name, content)
     const key = await documentCacheKey(content)
     await window.api.setCache(key, JSON.stringify(document))
@@ -2037,6 +2038,7 @@ function handleGlobalPointerDown(e: PointerEvent): void {
     <!-- ── 错误提示 ── -->
     <div
       v-if="errorMsg"
+      role="alert"
       class="shrink-0 flex items-center gap-2 px-4 py-2 bg-red-50 text-red-600 text-sm border-b border-red-200"
     >
       <IconAlertCircle class="w-4 h-4 shrink-0" />

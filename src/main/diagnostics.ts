@@ -37,7 +37,7 @@ export function buildDiagnosticReport(input: {
       id: 'offline',
       title: '字幕与笔记',
       status: 'ok',
-      detail: '导入、阅读、笔记和文字导出可离线使用。'
+      detail: '导入、阅读、笔记和文档导出可离线使用。'
     },
     {
       id: 'engine',

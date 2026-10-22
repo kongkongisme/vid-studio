@@ -249,4 +249,14 @@ test('opens the built-in example offline and navigates adjacent chapter boundari
   expect(await page.evaluate(() => window.mockState.cachedSources)).toHaveLength(1)
   await expect(page.getByRole('button', { name: '导出', exact: true })).toBeEnabled()
   await page.screenshot({ path: test.info().outputPath('demo-small.png') })
+  await page.getByLabel('选择字幕或笔记文件').setInputFiles({
+    name: '损坏字幕.srt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from([0xe4, 0xb8])
+  })
+  await expect(page.getByRole('alert')).toContainText('无法识别文字编码')
+  await expect(
+    reader.getByRole('heading', { name: '从看过到记住：三步整理学习笔记' })
+  ).toBeVisible()
+  expect(await page.evaluate(() => window.mockState.cachedSources)).toHaveLength(1)
 })

@@ -9,6 +9,23 @@ import {
 export const MAX_IMPORT_BYTES = 10 * 1024 * 1024
 export const IMPORT_EXTENSIONS = new Set(['srt', 'vtt', 'md', 'json'])
 
+/** Decode only encodings we can identify reliably; never replace broken bytes with mojibake. */
+export function decodeTimelineBytes(bytes: Uint8Array): string {
+  if (bytes.byteLength > MAX_IMPORT_BYTES)
+    throw new Error('文件过大，请选择不超过 10 MB 的字幕或笔记。')
+  const encoding =
+    bytes[0] === 0xff && bytes[1] === 0xfe
+      ? 'utf-16le'
+      : bytes[0] === 0xfe && bytes[1] === 0xff
+        ? 'utf-16be'
+        : 'utf-8'
+  try {
+    return new TextDecoder(encoding, { fatal: true }).decode(bytes)
+  } catch {
+    throw new Error('无法识别文字编码。请用编辑器将文件另存为 UTF-8 后重试。')
+  }
+}
+
 export interface TimelineDocument {
   type: 'vidstudio-timeline'
   version: 1
@@ -223,7 +240,8 @@ function parseJson(content: string): Omit<TimelineDocument, 'fileName'> & { file
 /** The only accepted JSON is this app's versioned format; arbitrary files never become executable content. */
 export function importTimeline(fileName: string, raw: string): TimelineDocument {
   if (raw.length > MAX_IMPORT_BYTES) throw new Error('文件过大，请选择不超过 10 MB 的字幕或笔记。')
-  if (raw.includes('\0')) throw new Error('文件不是 UTF-8 文字，请先转换编码。')
+  if (raw.includes('\0'))
+    throw new Error('文件含有无效字符或不受支持的编码，请用编辑器另存为 UTF-8 后重试。')
   const content = raw.replace(/^\uFEFF/, '')
   const extension = fileName.split('.').pop()?.toLowerCase() ?? ''
   if (!IMPORT_EXTENSIONS.has(extension))
