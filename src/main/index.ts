@@ -27,7 +27,9 @@ import { buildTextExport, EXPORT_FORMATS, safeExportFilename } from '../shared/t
 import type { TextExportFormat } from '../shared/export'
 import { extname, join, resolve } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import { spawn, execSync, type ChildProcess } from 'child_process'
+import { execSync, type ChildProcess } from 'child_process'
+import { ManagedProcesses } from './managed-processes'
+import { writeStagedOutput } from './staged-output'
 import { existsSync, mkdirSync, statSync } from 'fs'
 import { readFile, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
@@ -49,6 +51,8 @@ if (process.env.VID_STUDIO_DATA_DIR) {
 const vidEnginePath = is.dev
   ? join(process.cwd(), 'vid-engine')
   : join(process.resourcesPath, 'vid-engine')
+
+const backgroundProcesses = new ManagedProcesses()
 
 let settingsStore: SettingsStore | null = null
 function getSettingsStore(): SettingsStore {
@@ -266,7 +270,7 @@ async function runPython(scriptName: string, args: string[] = []): Promise<strin
   const env = await buildSpawnEnv()
   return new Promise((resolve, reject) => {
     let out = ''
-    const proc = spawn(pythonBin, [scriptName, ...args], {
+    const proc = backgroundProcesses.spawn(pythonBin, [scriptName, ...args], {
       cwd: vidEnginePath,
       env
     })
@@ -419,7 +423,7 @@ function canUseOriginalForPlayback(filePath: string): boolean {
 
 function getPlaybackProxyPath(filePath: string): string {
   const stat = statSync(filePath)
-  const key = `${filePath}:${stat.size}:${stat.mtimeMs}`
+  const key = `complete-preview-v2:${filePath}:${stat.size}:${stat.mtimeMs}`
   const id = createHash('sha256').update(key).digest('hex').slice(0, 18)
   const dir = join(tmpdir(), 'vid-studio-playback')
   mkdirSync(dir, { recursive: true })
@@ -430,6 +434,7 @@ function sendPlaybackProgress(
   event: Electron.IpcMainInvokeEvent,
   progress: LocalPlaybackProgress
 ): void {
+  if (event.sender.isDestroyed()) return
   event.sender.send('local-playback-progress', progress)
 }
 
@@ -450,7 +455,7 @@ function probeDurationSeconds(filePath: string): Promise<number> {
       'default=noprint_wrappers=1:nokey=1',
       filePath
     ]
-    const proc = spawn('ffprobe', args)
+    const proc = backgroundProcesses.spawn('ffprobe', args)
     let out = ''
     proc.stdout.on('data', (d: Buffer) => {
       out += d.toString()
@@ -463,110 +468,113 @@ function probeDurationSeconds(filePath: string): Promise<number> {
   })
 }
 
-function runPlaybackTranscode(
+async function runPlaybackTranscode(
   event: Electron.IpcMainInvokeEvent,
   filePath: string,
   outputPath: string,
   durationSeconds: number
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (currentPlaybackProc) {
-      currentPlaybackProc.kill()
-      currentPlaybackProc = null
-    }
+  if (currentPlaybackProc) await backgroundProcesses.stop(currentPlaybackProc)
+  await writeStagedOutput(
+    outputPath,
+    (temporaryPath) =>
+      new Promise<void>((resolve, reject) => {
+        const args = [
+          '-y',
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-fflags',
+          '+genpts',
+          '-i',
+          filePath,
+          '-map',
+          '0:v:0',
+          '-map',
+          '0:a:0?',
+          '-vf',
+          "scale='min(1280,iw)':-2",
+          '-c:v',
+          'libx264',
+          '-preset',
+          'veryfast',
+          '-crf',
+          '28',
+          '-pix_fmt',
+          'yuv420p',
+          '-c:a',
+          'aac',
+          '-b:a',
+          '128k',
+          '-movflags',
+          '+faststart',
+          '-progress',
+          'pipe:1',
+          '-nostats',
+          temporaryPath
+        ]
 
-    const args = [
-      '-y',
-      '-hide_banner',
-      '-loglevel',
-      'error',
-      '-fflags',
-      '+genpts',
-      '-i',
-      filePath,
-      '-map',
-      '0:v:0',
-      '-map',
-      '0:a:0?',
-      '-vf',
-      "scale='min(1280,iw)':-2",
-      '-c:v',
-      'libx264',
-      '-preset',
-      'veryfast',
-      '-crf',
-      '28',
-      '-pix_fmt',
-      'yuv420p',
-      '-c:a',
-      'aac',
-      '-b:a',
-      '128k',
-      '-movflags',
-      '+faststart',
-      '-progress',
-      'pipe:1',
-      '-nostats',
-      outputPath
-    ]
+        const proc = backgroundProcesses.spawn('ffmpeg', args)
+        currentPlaybackProc = proc
+        const total = Math.max(durationSeconds, 1)
+        let lastProgress = -5
+        let errorText = ''
 
-    const proc = spawn('ffmpeg', args)
-    currentPlaybackProc = proc
-    const total = Math.max(durationSeconds, 1)
-    let lastProgress = -5
-    let errorText = ''
-
-    sendPlaybackProgress(event, {
-      filePath,
-      status: 'converting',
-      progress: 0,
-      message: '正在生成可播放预览'
-    })
-
-    proc.stdout.on('data', (d: Buffer) => {
-      for (const rawLine of d.toString().split(/\r?\n/)) {
-        const timeMs = parseFfmpegTimeMs(rawLine.trim())
-        if (timeMs === null) continue
-        const progress = Math.min(99, Math.max(0, Math.floor((timeMs / 1_000_000 / total) * 100)))
-        if (progress >= lastProgress + 5) {
-          lastProgress = progress
-          sendPlaybackProgress(event, {
-            filePath,
-            status: 'converting',
-            progress,
-            message: `正在生成可播放预览 ${progress}%`
-          })
-        }
-      }
-    })
-
-    proc.stderr.on('data', (d: Buffer) => {
-      errorText += d.toString()
-    })
-
-    proc.on('close', (code, signal) => {
-      if (currentPlaybackProc === proc) currentPlaybackProc = null
-      if (signal) {
-        reject(new Error('已取消生成播放预览'))
-        return
-      }
-      if (code === 0 && existsSync(outputPath)) {
         sendPlaybackProgress(event, {
           filePath,
-          status: 'ready',
-          progress: 100,
-          message: '播放预览已就绪'
+          status: 'converting',
+          progress: 0,
+          message: '正在生成可播放预览'
         })
-        resolve()
-        return
-      }
-      reject(new Error(errorText.trim() || `ffmpeg 退出码 ${code}`))
-    })
 
-    proc.on('error', (err: NodeJS.ErrnoException) => {
-      if (currentPlaybackProc === proc) currentPlaybackProc = null
-      reject(new Error(err.code === 'ENOENT' ? '未找到 ffmpeg，请先安装 ffmpeg' : err.message))
-    })
+        proc.stdout.on('data', (d: Buffer) => {
+          for (const rawLine of d.toString().split(/\r?\n/)) {
+            const timeMs = parseFfmpegTimeMs(rawLine.trim())
+            if (timeMs === null) continue
+            const progress = Math.min(
+              99,
+              Math.max(0, Math.floor((timeMs / 1_000_000 / total) * 100))
+            )
+            if (progress >= lastProgress + 5) {
+              lastProgress = progress
+              sendPlaybackProgress(event, {
+                filePath,
+                status: 'converting',
+                progress,
+                message: `正在生成可播放预览 ${progress}%`
+              })
+            }
+          }
+        })
+
+        proc.stderr.on('data', (d: Buffer) => {
+          errorText += d.toString()
+        })
+
+        proc.on('close', (code, signal) => {
+          if (currentPlaybackProc === proc) currentPlaybackProc = null
+          if (signal) {
+            reject(new Error('已取消生成播放预览'))
+            return
+          }
+          if (code === 0 && existsSync(temporaryPath)) {
+            resolve()
+            return
+          }
+          reject(new Error(errorText.trim() || `ffmpeg 退出码 ${code}`))
+        })
+
+        proc.on('error', (err: NodeJS.ErrnoException) => {
+          if (currentPlaybackProc === proc) currentPlaybackProc = null
+          reject(new Error(err.code === 'ENOENT' ? '未找到 ffmpeg，请先安装 ffmpeg' : err.message))
+        })
+      })
+  )
+  sendPlaybackProgress(event, {
+    filePath,
+    status: 'ready',
+    progress: 100,
+    message: '播放预览已就绪'
   })
 }
 
@@ -663,6 +671,7 @@ async function generateSummaryDocumentTitle(
 // 记录当前解析进程，用于停止
 let currentParseProc: ChildProcess | null = null
 let parsePreparing = false
+let parseStopping = false
 let parseGeneration = 0
 let currentPlaybackProc: ChildProcess | null = null
 
@@ -671,7 +680,7 @@ async function runParseProcess(
   args: string[],
   outputPath: string
 ): Promise<ParseResult> {
-  if (currentParseProc || parsePreparing)
+  if (currentParseProc || parsePreparing || parseStopping)
     return { success: false, error: '已有解析任务正在运行，请先停止。' }
   const generation = ++parseGeneration
   parsePreparing = true
@@ -686,7 +695,7 @@ async function runParseProcess(
   if (generation !== parseGeneration) return { success: false, error: '已停止解析' }
   parsePreparing = false
   return new Promise<ParseResult>((resolve) => {
-    const proc = spawn(pythonBin, args, { cwd: vidEnginePath, env })
+    const proc = backgroundProcesses.spawn(pythonBin, args, { cwd: vidEnginePath, env })
     currentParseProc = proc
     const receiptPrefix = '__VID_STUDIO_LLM_RECEIPT__'
     const stdoutDecoder = new StringDecoder('utf8')
@@ -921,12 +930,18 @@ ipcMain.handle('export-timeline-document', (_, payload: TimelineExportPayload) =
 )
 
 // ─── IPC：停止解析 ────────────────────────────────────────
-ipcMain.handle('stop-parse', () => {
+ipcMain.handle('stop-parse', async () => {
   parseGeneration++
   parsePreparing = false
   if (currentParseProc) {
-    currentParseProc.kill()
-    currentParseProc = null
+    const proc = currentParseProc
+    parseStopping = true
+    try {
+      await backgroundProcesses.stop(proc)
+      if (currentParseProc === proc) currentParseProc = null
+    } finally {
+      parseStopping = false
+    }
   }
 })
 
@@ -1235,10 +1250,21 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('before-quit', () => {
+let shuttingDown = false
+let readyToQuit = false
+app.on('before-quit', (event) => {
+  if (readyToQuit) return
+  event.preventDefault()
+  if (shuttingDown) return
+  shuttingDown = true
   parseGeneration++
-  currentParseProc?.kill()
-  currentPlaybackProc?.kill()
+  void backgroundProcesses
+    .shutdown()
+    .catch((error) => console.error('[main] 关闭后台任务失败:', error))
+    .finally(() => {
+      readyToQuit = true
+      app.quit()
+    })
 })
 
 app.on('window-all-closed', () => {

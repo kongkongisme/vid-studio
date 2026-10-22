@@ -120,6 +120,7 @@ let parseGeneration = 0
 
 const url = ref('')
 const loading = ref(false)
+const stoppingParse = ref(false)
 const errorMsg = ref('')
 const urlExtractedHint = ref(false)
 const videoId = ref('')
@@ -884,12 +885,16 @@ async function parseLocalVideo(): Promise<void> {
 // ─── 停止解析 ─────────────────────────────────────────────
 
 async function stopParse(): Promise<void> {
+  if (stoppingParse.value) return
   parseGeneration++
-  loading.value = false
+  stoppingParse.value = true
   try {
     await window.api.stopParse()
   } catch (error) {
     errorMsg.value = `停止解析失败：${String(error)}`
+  } finally {
+    loading.value = false
+    stoppingParse.value = false
   }
 }
 
@@ -1973,10 +1978,11 @@ function handleGlobalPointerDown(e: PointerEvent): void {
       <button
         v-if="loading"
         class="shrink-0 flex items-center gap-1.5 px-4 py-1.5 bg-red-500 hover:bg-red-600 active:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
+        :disabled="stoppingParse"
         @click="stopParse"
       >
         <IconSquare class="w-4 h-4" />
-        停止解析
+        {{ stoppingParse ? '正在停止…' : '停止解析' }}
       </button>
 
       <!-- 剪贴板快速解析 -->

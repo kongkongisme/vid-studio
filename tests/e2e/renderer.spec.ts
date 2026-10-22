@@ -15,6 +15,8 @@ interface MockState {
   deferDiagnosis: boolean
   finishDiagnosis?: (report: DiagnosticReport) => void
   saved?: SettingsUpdate
+  finishStop?: () => void
+  finishParse?: () => void
 }
 declare global {
   interface Window {
@@ -81,6 +83,15 @@ async function installApi(page: Page): Promise<void> {
       },
       getConversation: async () => [],
       getAnnotations: async () => [],
+      onParseProgress: () => () => undefined,
+      parseVideo: () =>
+        new Promise((resolve) => {
+          state.finishParse = () => resolve({ success: false, error: '已停止解析' })
+        }),
+      stopParse: () =>
+        new Promise((resolve) => {
+          state.finishStop = resolve
+        }),
       onChatEvent: () => () => undefined,
       onLocalPlaybackProgress: () => () => undefined
     }
@@ -180,4 +191,20 @@ test('failed reloads and stale diagnosis cannot restore outdated settings', asyn
   await expect(dialog.getByRole('alert')).toContainText('mock settings unavailable')
   await expect(dialog.getByRole('button', { name: '保存设置', exact: true })).toBeDisabled()
   await expect(dialog.getByLabel('DeepSeek API Key', { exact: true })).toHaveCount(0)
+})
+
+test('keeps source controls locked until the background process tree has stopped', async ({
+  page
+}) => {
+  await page.getByPlaceholder(/粘贴.*链接/).fill('https://www.bilibili.com/video/BV1xx411c7mD')
+  await page.getByRole('button', { name: '一键解析', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => Boolean(window.mockState.finishParse))).toBe(true)
+  await page.getByRole('button', { name: '停止解析', exact: true }).click()
+  await expect(page.getByRole('button', { name: '正在停止…', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '打开资料库' })).toBeDisabled()
+  await page.evaluate(() => window.mockState.finishParse?.())
+  await expect(page.getByRole('button', { name: '正在停止…', exact: true })).toBeVisible()
+  await page.evaluate(() => window.mockState.finishStop?.())
+  await expect(page.getByRole('button', { name: '一键解析', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '打开资料库' })).toBeEnabled()
 })
