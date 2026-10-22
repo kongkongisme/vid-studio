@@ -12,6 +12,7 @@ files:
   - '!vid-engine/**'
   - '!tests/**'
   - '!docs/**'
+  - '!examples/**'
   - '!vitest.config.*'
   - '!playwright.config.*'
   - '!test-results/**'

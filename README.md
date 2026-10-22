@@ -10,7 +10,7 @@
 
 ---
 
-![主界面截图](.github/images/screenshot-main-window.jpg)
+![离线示例、个人笔记与时间轴](.github/images/offline-demo.png)
 
 ---
 
@@ -19,6 +19,9 @@
 VidStudio 视析工作站是一款基于 Electron 的桌面应用，内置 B 站视频播放器与 AI 解析引擎（VidEngine 视析引擎）。输入视频链接后，自动提取字幕或进行语音转文字，通过语义分块与 LLM 结构化处理，生成带时间轴的知识摘要。解析完成后可在对话面板中与视频内容自由问答。
 
 已有字幕可以直接离线导入，无需 Python 或 API Key。视频解析支持字幕优先、语义分块与可选视觉分析；模型与接口可以在应用内配置。下方费用是方案估算，实际价格和免费额度以服务商为准。
+
+**先试一遍**：启动后点击「打开离线示例」，即可体验阅读、搜索、笔记、收藏和导出。
+示例内容为虚构的学习材料，随应用提供，不发起模型请求。也可直接打开 [示例 JSON](examples/learning-demo.json) 查看文件格式。
 
 ---
 
@@ -215,6 +218,7 @@ npm run dev
 
 首次启动会下载匹配平台的 Electron 44 运行时；也可先执行 `npm run setup:electron`。
 项目统一使用 npm 与 `package-lock.json`，干净安装或 CI 请运行 `npm ci`。
+通过代理下载时，可按 Electron 官方方式设置 `ELECTRON_GET_USE_PROXY=1`，并配置系统对应的代理环境变量。
 
 ---
 

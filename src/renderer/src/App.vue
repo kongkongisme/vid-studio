@@ -45,6 +45,7 @@ import {
   type TranscriptLine
 } from '../../shared/timeline'
 import { highlightText, renderMarkdown } from './lib/markdown'
+import learningDemo from '../../../examples/learning-demo.json?raw'
 import {
   IconSearch,
   IconPlayerPlay,
@@ -1065,6 +1066,12 @@ async function importDocumentFile(file: File): Promise<void> {
   }
 }
 
+function openLearningDemo(): void {
+  void importDocumentFile(
+    new File([learningDemo], 'learning-demo.json', { type: 'application/json' })
+  )
+}
+
 async function handleDocumentInput(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
@@ -1643,7 +1650,9 @@ function handleGlobalPointerDown(e: PointerEvent): void {
       @export="exportTimelineDocument"
     />
     <!-- ── 顶部栏 ── -->
-    <header class="shrink-0 flex items-center gap-2.5 px-4 py-2 border-b border-slate-200 bg-white">
+    <header
+      class="shrink-0 flex flex-wrap items-center gap-x-2.5 gap-y-2 px-4 py-2 border-b border-slate-200 bg-white min-[1280px]:flex-nowrap"
+    >
       <!-- Logo -->
       <div class="flex items-center gap-1.5 shrink-0">
         <IconVideo class="w-4 h-4 text-blue-500" />
@@ -1660,7 +1669,7 @@ function handleGlobalPointerDown(e: PointerEvent): void {
 
       <!-- URL 输入框 -->
       <div
-        class="flex items-center gap-2 flex-1 bg-slate-50 rounded-lg px-3 py-1.5 border border-slate-200 focus-within:border-blue-400 focus-within:bg-white transition-colors"
+        class="flex min-w-0 items-center gap-2 flex-1 bg-slate-50 rounded-lg px-3 py-1.5 border border-slate-200 focus-within:border-blue-400 focus-within:bg-white transition-colors"
       >
         <IconSearch class="w-3.5 h-3.5 text-slate-400 shrink-0" />
         <input
@@ -1668,7 +1677,7 @@ function handleGlobalPointerDown(e: PointerEvent): void {
           :disabled="loading || importingDocument || chatLoading"
           aria-label="视频链接或本地文件"
           placeholder="粘贴 B 站 / YouTube 视频链接，或选择本地视频..."
-          class="flex-1 bg-transparent outline-none text-sm text-slate-800 placeholder:text-slate-400"
+          class="min-w-0 flex-1 bg-transparent outline-none text-sm text-slate-800 placeholder:text-slate-400"
           @input="handleUrlInput"
           @keydown.enter="parseVideo"
           @paste="handleUrlPaste"
@@ -1713,312 +1722,316 @@ function handleGlobalPointerDown(e: PointerEvent): void {
       />
 
       <!-- 解析模式选择器 -->
-      <div
-        v-if="sourceMode !== 'document'"
-        class="shrink-0 flex bg-slate-100 rounded-lg p-[3px] gap-[2px]"
-      >
-        <button
-          :class="
-            skipVideo
-              ? 'bg-white shadow-sm text-slate-800 font-medium'
-              : 'text-slate-400 hover:text-slate-600'
-          "
-          class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs transition-all duration-150"
-          title="仅通过字幕/语音转文字解析，速度快"
-          @click="skipVideo = true"
-        >
-          <IconBolt class="w-3.5 h-3.5" :class="skipVideo ? 'text-blue-500' : ''" />
-          仅 ASR 解读
-        </button>
-        <button
-          :class="
-            !skipVideo
-              ? 'bg-white shadow-sm text-slate-800 font-medium'
-              : 'text-slate-400 hover:text-slate-600'
-          "
-          class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs transition-all duration-150"
-          title="额外使用 GLM-4V 对视频画面逐帧理解，更准确但耗时更长"
-          @click="skipVideo = false"
-        >
-          <IconEye class="w-3.5 h-3.5" :class="!skipVideo ? 'text-amber-500' : ''" />
-          视觉精析
-        </button>
-      </div>
-
-      <!-- LLM 模型选择 -->
-      <label
-        class="shrink-0 flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] text-slate-400"
-        title="用于时间轴结构化、视频对话和导出标题生成"
-      >
-        <span>模型</span>
-        <select
-          v-model="llmProvider"
-          class="max-w-[116px] cursor-pointer bg-transparent text-xs font-medium text-slate-700 outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
-          aria-label="选择内容分析模型"
-        >
-          <option value="deepseek">DeepSeek</option>
-          <option value="gpt-5.6-sol">自定义接口</option>
-        </select>
-      </label>
-
-      <!-- 最近一次真实模型调用凭证 -->
-      <details v-if="lastLlmReceipt" ref="receiptDetailsRef" class="relative shrink-0">
-        <summary
-          class="flex cursor-pointer list-none items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 [&::-webkit-details-marker]:hidden"
-          :class="
-            lastLlmReceipt.status === 'success'
-              ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-              : 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'
-          "
-          title="查看最近一次模型调用的请求与响应凭证"
-        >
-          <IconShieldCheck class="h-3.5 w-3.5" />
-          调用凭证
-        </summary>
-
+      <div class="flex w-full items-center justify-end gap-2.5 min-[1280px]:w-auto">
         <div
-          class="absolute right-0 top-full z-50 mt-2 w-[390px] rounded-xl border border-slate-200 bg-white p-4 shadow-xl"
+          v-if="sourceMode !== 'document'"
+          class="shrink-0 flex bg-slate-100 rounded-lg p-[3px] gap-[2px]"
         >
-          <div class="flex items-start justify-between gap-3">
-            <div>
-              <p class="text-sm font-semibold text-slate-800">模型调用凭证</p>
-              <p class="mt-0.5 text-[11px] text-slate-400">{{ lastLlmReceipt.purpose }}</p>
-            </div>
-            <span
-              class="rounded-full px-2 py-0.5 text-[10px] font-medium"
-              :class="
-                lastLlmReceipt.status === 'success'
-                  ? 'bg-emerald-100 text-emerald-700'
-                  : 'bg-amber-100 text-amber-700'
-              "
-            >
-              {{ lastLlmReceipt.status === 'success' ? '接口已响应' : '本地降级' }}
-            </span>
-          </div>
-
-          <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
-            <div>
-              <dt class="text-[10px] text-slate-400">选择的服务</dt>
-              <dd class="mt-0.5 font-medium text-slate-700">
-                {{ getReceiptProviderLabel(lastLlmReceipt.provider) }}
-              </dd>
-            </div>
-            <div>
-              <dt class="text-[10px] text-slate-400">耗时</dt>
-              <dd class="mt-0.5 font-medium text-slate-700">{{ lastLlmReceipt.durationMs }} ms</dd>
-            </div>
-            <div>
-              <dt class="text-[10px] text-slate-400">请求模型</dt>
-              <dd class="mt-0.5 select-text font-mono text-[11px] text-slate-700">
-                {{ lastLlmReceipt.requestedModel }}
-              </dd>
-            </div>
-            <div>
-              <dt class="text-[10px] text-slate-400">响应模型</dt>
-              <dd class="mt-0.5 select-text font-mono text-[11px] text-slate-700">
-                {{ lastLlmReceipt.responseModel || '接口未返回' }}
-              </dd>
-            </div>
-            <div class="col-span-2">
-              <dt class="text-[10px] text-slate-400">Endpoint</dt>
-              <dd class="mt-0.5 break-all select-text font-mono text-[10px] text-slate-600">
-                {{ lastLlmReceipt.endpoint || '未建立模型连接' }}
-              </dd>
-            </div>
-            <div class="col-span-2">
-              <dt class="text-[10px] text-slate-400">Request ID</dt>
-              <dd class="mt-0.5 break-all select-text font-mono text-[10px] text-slate-600">
-                {{ lastLlmReceipt.requestId || '接口未提供' }}
-              </dd>
-            </div>
-            <div>
-              <dt class="text-[10px] text-slate-400">推理强度</dt>
-              <dd class="mt-0.5 text-slate-700">
-                {{ lastLlmReceipt.reasoningEffort || '默认' }}
-              </dd>
-            </div>
-            <div>
-              <dt class="text-[10px] text-slate-400">调用时间</dt>
-              <dd class="mt-0.5 text-slate-700">
-                {{ formatReceiptTime(lastLlmReceipt.timestamp) }}
-              </dd>
-            </div>
-          </dl>
-
-          <p class="mt-3 border-t border-slate-100 pt-3 text-[10px] leading-4 text-slate-400">
-            此凭证证明应用向该 Endpoint
-            发送了对应模型参数，并记录接口自报信息；第三方代理的底层模型仍需服务商日志或签名证明。
-          </p>
-        </div>
-      </details>
-
-      <!-- 浏览器账号状态（B站 + YouTube 合并） -->
-      <div class="relative group/cookie shrink-0">
-        <button
-          aria-label="同步浏览器账号"
-          title="点击同步浏览器账号"
-          :disabled="cookieCombinedStatus === 'loading'"
-          class="w-7 h-7 flex items-center justify-center rounded-md bg-slate-50 border border-slate-200 cursor-default transition-colors group-hover/cookie:bg-slate-100"
-          @click="syncBrowserAccounts"
-        >
-          <!-- 加载中：统一转圈 -->
-          <IconLoader2
-            v-if="cookieCombinedStatus === 'loading'"
-            class="w-3.5 h-3.5 text-slate-400 animate-spin"
-          />
-          <!-- 加载完成：B站 和 YouTube 各一个状态点 -->
-          <div v-else class="flex flex-col gap-[3px]">
-            <div class="flex items-center gap-[3px]">
-              <span class="text-[6px] font-bold text-slate-400 leading-none w-[7px]">B</span>
-              <div
-                class="w-[6px] h-[6px] rounded-full"
-                :class="
-                  cookieStatus === 'ok'
-                    ? 'bg-emerald-500'
-                    : cookieStatus === 'fail'
-                      ? 'bg-amber-400'
-                      : 'bg-slate-300'
-                "
-              />
-            </div>
-            <div class="flex items-center gap-[3px]">
-              <span class="text-[6px] font-bold text-slate-400 leading-none w-[7px]">Y</span>
-              <div
-                class="w-[6px] h-[6px] rounded-full"
-                :class="
-                  cookieYtStatus === 'ok'
-                    ? 'bg-emerald-500'
-                    : cookieYtStatus === 'fail'
-                      ? 'bg-amber-400'
-                      : 'bg-slate-300'
-                "
-              />
-            </div>
-          </div>
-        </button>
-        <div
-          class="absolute top-full right-0 mt-2 w-max max-w-[300px] px-3 py-2.5 bg-slate-800 rounded-xl shadow-xl opacity-0 group-hover/cookie:opacity-100 transition-opacity duration-150 pointer-events-none z-50"
-        >
-          <p class="text-xs font-medium text-white leading-snug mb-1.5">浏览器账号</p>
-          <div class="flex flex-col gap-1">
-            <div class="flex items-center gap-1.5">
-              <div
-                class="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                :class="
-                  cookieStatus === 'ok'
-                    ? 'bg-emerald-500'
-                    : cookieStatus === 'fail'
-                      ? 'bg-amber-400'
-                      : 'bg-slate-500'
-                "
-              />
-              <span
-                class="text-[11px] leading-snug"
-                :class="cookieStatus === 'ok' ? 'text-slate-200' : 'text-slate-400'"
-              >
-                B站：{{
-                  cookieStatus === 'ok'
-                    ? `已同步（${cookieBrowser}）`
-                    : cookieStatus === 'fail'
-                      ? '未检测到账号'
-                      : cookieStatus === 'loading'
-                        ? '同步中…'
-                        : '未同步'
-                }}
-              </span>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <div
-                class="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                :class="
-                  cookieYtStatus === 'ok'
-                    ? 'bg-emerald-500'
-                    : cookieYtStatus === 'fail'
-                      ? 'bg-amber-400'
-                      : 'bg-slate-500'
-                "
-              />
-              <span
-                class="text-[11px] leading-snug"
-                :class="cookieYtStatus === 'ok' ? 'text-slate-200' : 'text-slate-400'"
-              >
-                YouTube：{{
-                  cookieYtStatus === 'ok'
-                    ? `已同步（${cookieYtBrowser}）`
-                    : cookieYtStatus === 'fail'
-                      ? '未检测到账号'
-                      : cookieYtStatus === 'loading'
-                        ? '同步中…'
-                        : '未同步'
-                }}
-              </span>
-            </div>
-          </div>
-          <p
-            v-if="cookieStatus === 'fail' || cookieYtStatus === 'fail'"
-            class="text-[10px] text-slate-500 mt-1.5 leading-snug"
+          <button
+            :class="
+              skipVideo
+                ? 'bg-white shadow-sm text-slate-800 font-medium'
+                : 'text-slate-400 hover:text-slate-600'
+            "
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs transition-all duration-150"
+            title="仅通过字幕/语音转文字解析，速度快"
+            @click="skipVideo = true"
           >
-            请先在 Edge / Chrome / Firefox / Safari 中登录
-          </p>
-          <div
-            class="absolute bottom-full right-2.5 border-[5px] border-transparent border-b-slate-800"
-          />
+            <IconBolt class="w-3.5 h-3.5" :class="skipVideo ? 'text-blue-500' : ''" />
+            仅 ASR 解读
+          </button>
+          <button
+            :class="
+              !skipVideo
+                ? 'bg-white shadow-sm text-slate-800 font-medium'
+                : 'text-slate-400 hover:text-slate-600'
+            "
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs transition-all duration-150"
+            title="额外使用 GLM-4V 对视频画面逐帧理解，更准确但耗时更长"
+            @click="skipVideo = false"
+          >
+            <IconEye class="w-3.5 h-3.5" :class="!skipVideo ? 'text-amber-500' : ''" />
+            视觉精析
+          </button>
         </div>
+
+        <!-- LLM 模型选择 -->
+        <label
+          class="shrink-0 flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] text-slate-400"
+          title="用于时间轴结构化、视频对话和导出标题生成"
+        >
+          <span>模型</span>
+          <select
+            v-model="llmProvider"
+            class="max-w-[116px] cursor-pointer bg-transparent text-xs font-medium text-slate-700 outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+            aria-label="选择内容分析模型"
+          >
+            <option value="deepseek">DeepSeek</option>
+            <option value="gpt-5.6-sol">自定义接口</option>
+          </select>
+        </label>
+
+        <!-- 最近一次真实模型调用凭证 -->
+        <details v-if="lastLlmReceipt" ref="receiptDetailsRef" class="relative shrink-0">
+          <summary
+            class="flex cursor-pointer list-none items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 [&::-webkit-details-marker]:hidden"
+            :class="
+              lastLlmReceipt.status === 'success'
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                : 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'
+            "
+            title="查看最近一次模型调用的请求与响应凭证"
+          >
+            <IconShieldCheck class="h-3.5 w-3.5" />
+            调用凭证
+          </summary>
+
+          <div
+            class="absolute right-0 top-full z-50 mt-2 w-[390px] rounded-xl border border-slate-200 bg-white p-4 shadow-xl"
+          >
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <p class="text-sm font-semibold text-slate-800">模型调用凭证</p>
+                <p class="mt-0.5 text-[11px] text-slate-400">{{ lastLlmReceipt.purpose }}</p>
+              </div>
+              <span
+                class="rounded-full px-2 py-0.5 text-[10px] font-medium"
+                :class="
+                  lastLlmReceipt.status === 'success'
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : 'bg-amber-100 text-amber-700'
+                "
+              >
+                {{ lastLlmReceipt.status === 'success' ? '接口已响应' : '本地降级' }}
+              </span>
+            </div>
+
+            <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
+              <div>
+                <dt class="text-[10px] text-slate-400">选择的服务</dt>
+                <dd class="mt-0.5 font-medium text-slate-700">
+                  {{ getReceiptProviderLabel(lastLlmReceipt.provider) }}
+                </dd>
+              </div>
+              <div>
+                <dt class="text-[10px] text-slate-400">耗时</dt>
+                <dd class="mt-0.5 font-medium text-slate-700">
+                  {{ lastLlmReceipt.durationMs }} ms
+                </dd>
+              </div>
+              <div>
+                <dt class="text-[10px] text-slate-400">请求模型</dt>
+                <dd class="mt-0.5 select-text font-mono text-[11px] text-slate-700">
+                  {{ lastLlmReceipt.requestedModel }}
+                </dd>
+              </div>
+              <div>
+                <dt class="text-[10px] text-slate-400">响应模型</dt>
+                <dd class="mt-0.5 select-text font-mono text-[11px] text-slate-700">
+                  {{ lastLlmReceipt.responseModel || '接口未返回' }}
+                </dd>
+              </div>
+              <div class="col-span-2">
+                <dt class="text-[10px] text-slate-400">Endpoint</dt>
+                <dd class="mt-0.5 break-all select-text font-mono text-[10px] text-slate-600">
+                  {{ lastLlmReceipt.endpoint || '未建立模型连接' }}
+                </dd>
+              </div>
+              <div class="col-span-2">
+                <dt class="text-[10px] text-slate-400">Request ID</dt>
+                <dd class="mt-0.5 break-all select-text font-mono text-[10px] text-slate-600">
+                  {{ lastLlmReceipt.requestId || '接口未提供' }}
+                </dd>
+              </div>
+              <div>
+                <dt class="text-[10px] text-slate-400">推理强度</dt>
+                <dd class="mt-0.5 text-slate-700">
+                  {{ lastLlmReceipt.reasoningEffort || '默认' }}
+                </dd>
+              </div>
+              <div>
+                <dt class="text-[10px] text-slate-400">调用时间</dt>
+                <dd class="mt-0.5 text-slate-700">
+                  {{ formatReceiptTime(lastLlmReceipt.timestamp) }}
+                </dd>
+              </div>
+            </dl>
+
+            <p class="mt-3 border-t border-slate-100 pt-3 text-[10px] leading-4 text-slate-400">
+              此凭证证明应用向该 Endpoint
+              发送了对应模型参数，并记录接口自报信息；第三方代理的底层模型仍需服务商日志或签名证明。
+            </p>
+          </div>
+        </details>
+
+        <!-- 浏览器账号状态（B站 + YouTube 合并） -->
+        <div class="relative group/cookie shrink-0">
+          <button
+            aria-label="同步浏览器账号"
+            title="点击同步浏览器账号"
+            :disabled="cookieCombinedStatus === 'loading'"
+            class="w-7 h-7 flex items-center justify-center rounded-md bg-slate-50 border border-slate-200 cursor-default transition-colors group-hover/cookie:bg-slate-100"
+            @click="syncBrowserAccounts"
+          >
+            <!-- 加载中：统一转圈 -->
+            <IconLoader2
+              v-if="cookieCombinedStatus === 'loading'"
+              class="w-3.5 h-3.5 text-slate-400 animate-spin"
+            />
+            <!-- 加载完成：B站 和 YouTube 各一个状态点 -->
+            <div v-else class="flex flex-col gap-[3px]">
+              <div class="flex items-center gap-[3px]">
+                <span class="text-[6px] font-bold text-slate-400 leading-none w-[7px]">B</span>
+                <div
+                  class="w-[6px] h-[6px] rounded-full"
+                  :class="
+                    cookieStatus === 'ok'
+                      ? 'bg-emerald-500'
+                      : cookieStatus === 'fail'
+                        ? 'bg-amber-400'
+                        : 'bg-slate-300'
+                  "
+                />
+              </div>
+              <div class="flex items-center gap-[3px]">
+                <span class="text-[6px] font-bold text-slate-400 leading-none w-[7px]">Y</span>
+                <div
+                  class="w-[6px] h-[6px] rounded-full"
+                  :class="
+                    cookieYtStatus === 'ok'
+                      ? 'bg-emerald-500'
+                      : cookieYtStatus === 'fail'
+                        ? 'bg-amber-400'
+                        : 'bg-slate-300'
+                  "
+                />
+              </div>
+            </div>
+          </button>
+          <div
+            class="absolute top-full right-0 mt-2 w-max max-w-[300px] px-3 py-2.5 bg-slate-800 rounded-xl shadow-xl opacity-0 group-hover/cookie:opacity-100 transition-opacity duration-150 pointer-events-none z-50"
+          >
+            <p class="text-xs font-medium text-white leading-snug mb-1.5">浏览器账号</p>
+            <div class="flex flex-col gap-1">
+              <div class="flex items-center gap-1.5">
+                <div
+                  class="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                  :class="
+                    cookieStatus === 'ok'
+                      ? 'bg-emerald-500'
+                      : cookieStatus === 'fail'
+                        ? 'bg-amber-400'
+                        : 'bg-slate-500'
+                  "
+                />
+                <span
+                  class="text-[11px] leading-snug"
+                  :class="cookieStatus === 'ok' ? 'text-slate-200' : 'text-slate-400'"
+                >
+                  B站：{{
+                    cookieStatus === 'ok'
+                      ? `已同步（${cookieBrowser}）`
+                      : cookieStatus === 'fail'
+                        ? '未检测到账号'
+                        : cookieStatus === 'loading'
+                          ? '同步中…'
+                          : '未同步'
+                  }}
+                </span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <div
+                  class="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                  :class="
+                    cookieYtStatus === 'ok'
+                      ? 'bg-emerald-500'
+                      : cookieYtStatus === 'fail'
+                        ? 'bg-amber-400'
+                        : 'bg-slate-500'
+                  "
+                />
+                <span
+                  class="text-[11px] leading-snug"
+                  :class="cookieYtStatus === 'ok' ? 'text-slate-200' : 'text-slate-400'"
+                >
+                  YouTube：{{
+                    cookieYtStatus === 'ok'
+                      ? `已同步（${cookieYtBrowser}）`
+                      : cookieYtStatus === 'fail'
+                        ? '未检测到账号'
+                        : cookieYtStatus === 'loading'
+                          ? '同步中…'
+                          : '未同步'
+                  }}
+                </span>
+              </div>
+            </div>
+            <p
+              v-if="cookieStatus === 'fail' || cookieYtStatus === 'fail'"
+              class="text-[10px] text-slate-500 mt-1.5 leading-snug"
+            >
+              请先在 Edge / Chrome / Firefox / Safari 中登录
+            </p>
+            <div
+              class="absolute bottom-full right-2.5 border-[5px] border-transparent border-b-slate-800"
+            />
+          </div>
+        </div>
+
+        <button
+          class="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition-colors"
+          title="资料库（⌘/Ctrl+K）"
+          aria-label="打开资料库"
+          :disabled="loading || importingDocument || chatLoading"
+          @click="openHistoryPanel"
+        >
+          <IconHistory class="w-4 h-4" />
+        </button>
+
+        <button
+          class="shrink-0 flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-50 hover:text-slate-700 disabled:opacity-40"
+          title="设置与诊断"
+          aria-label="打开设置与诊断"
+          :disabled="loading || importingDocument || chatLoading"
+          @click="showSettings = true"
+        >
+          <IconSettings class="h-4 w-4" />
+        </button>
+
+        <!-- 解析 / 停止 按钮 -->
+        <button
+          v-if="!loading && sourceMode !== 'document'"
+          class="shrink-0 flex items-center gap-1.5 px-4 py-1.5 bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
+          @click="parseVideo"
+        >
+          <IconPlayerPlay class="w-4 h-4" />
+          一键解析
+        </button>
+        <button
+          v-if="loading"
+          class="shrink-0 flex items-center gap-1.5 px-4 py-1.5 bg-red-500 hover:bg-red-600 active:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
+          :disabled="stoppingParse"
+          @click="stopParse"
+        >
+          <IconSquare class="w-4 h-4" />
+          {{ stoppingParse ? '正在停止…' : '停止解析' }}
+        </button>
+
+        <!-- 剪贴板快速解析 -->
+        <button
+          :disabled="loading"
+          class="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 transition-colors"
+          :class="
+            loading
+              ? 'text-slate-200 cursor-not-allowed'
+              : 'text-slate-400 hover:text-blue-500 hover:bg-blue-50'
+          "
+          title="从剪贴板粘贴链接并解析"
+          @click="pasteAndParse"
+        >
+          <IconClipboard class="w-4 h-4" />
+        </button>
       </div>
-
-      <button
-        class="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition-colors"
-        title="资料库（⌘/Ctrl+K）"
-        aria-label="打开资料库"
-        :disabled="loading || importingDocument || chatLoading"
-        @click="openHistoryPanel"
-      >
-        <IconHistory class="w-4 h-4" />
-      </button>
-
-      <button
-        class="shrink-0 flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-50 hover:text-slate-700 disabled:opacity-40"
-        title="设置与诊断"
-        aria-label="打开设置与诊断"
-        :disabled="loading || importingDocument || chatLoading"
-        @click="showSettings = true"
-      >
-        <IconSettings class="h-4 w-4" />
-      </button>
-
-      <!-- 解析 / 停止 按钮 -->
-      <button
-        v-if="!loading && sourceMode !== 'document'"
-        class="shrink-0 flex items-center gap-1.5 px-4 py-1.5 bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
-        @click="parseVideo"
-      >
-        <IconPlayerPlay class="w-4 h-4" />
-        一键解析
-      </button>
-      <button
-        v-if="loading"
-        class="shrink-0 flex items-center gap-1.5 px-4 py-1.5 bg-red-500 hover:bg-red-600 active:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
-        :disabled="stoppingParse"
-        @click="stopParse"
-      >
-        <IconSquare class="w-4 h-4" />
-        {{ stoppingParse ? '正在停止…' : '停止解析' }}
-      </button>
-
-      <!-- 剪贴板快速解析 -->
-      <button
-        :disabled="loading"
-        class="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 transition-colors"
-        :class="
-          loading
-            ? 'text-slate-200 cursor-not-allowed'
-            : 'text-slate-400 hover:text-blue-500 hover:bg-blue-50'
-        "
-        title="从剪贴板粘贴链接并解析"
-        @click="pasteAndParse"
-      >
-        <IconClipboard class="w-4 h-4" />
-      </button>
     </header>
 
     <!-- ── 错误提示 ── -->
@@ -2072,11 +2085,38 @@ function handleGlobalPointerDown(e: PointerEvent): void {
         />
 
         <!-- 空状态 -->
-        <div v-if="sourceMode === 'url' && !videoId" class="text-center pointer-events-none">
-          <IconVideo class="w-16 h-16 mx-auto mb-3 text-slate-300" />
-          <p class="text-sm font-medium text-slate-400">输入链接或选择本地视频，一键解析</p>
-          <p class="text-xs text-slate-300 mt-1">支持 B 站 · YouTube · mp4 / wmv 等本地视频</p>
-        </div>
+        <section
+          v-if="sourceMode === 'url' && !videoId"
+          class="mx-auto max-w-md px-8 py-10"
+          aria-labelledby="welcome-title"
+        >
+          <IconVideo class="mb-5 h-10 w-10 text-slate-400" />
+          <h1 id="welcome-title" class="text-xl font-semibold tracking-tight text-slate-800">
+            从视频或现有字幕开始
+          </h1>
+          <p class="mt-3 text-sm leading-7 text-slate-500">
+            粘贴 B 站、YouTube 链接，或打开本地视频。已有字幕和时间轴笔记可以直接导入。
+          </p>
+          <div class="mt-6 flex flex-wrap items-center gap-3">
+            <button
+              class="flex min-h-10 items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 hover:border-slate-400 focus-visible:outline-2 focus-visible:outline-blue-500 disabled:opacity-50"
+              :disabled="loading || importingDocument || chatLoading"
+              @click="documentFileInputRef?.click()"
+            >
+              <IconFileImport class="h-4 w-4" />导入自己的资料
+            </button>
+            <button
+              class="min-h-10 rounded-lg px-2 text-sm font-medium text-blue-600 hover:underline focus-visible:outline-2 focus-visible:outline-blue-500 disabled:opacity-50"
+              :disabled="loading || importingDocument || chatLoading"
+              @click="openLearningDemo"
+            >
+              {{ importingDocument ? '正在打开…' : '打开离线示例' }}
+            </button>
+          </div>
+          <p class="mt-4 text-xs leading-6 text-slate-500">
+            用示例试试搜索、笔记和导出，无需联网或配置模型。
+          </p>
+        </section>
 
         <!-- 遮罩：全屏激活前隐藏初始加载页面 -->
         <Transition
@@ -2182,8 +2222,10 @@ function handleGlobalPointerDown(e: PointerEvent): void {
             class="flex-1 flex flex-col items-center justify-center gap-2"
           >
             <IconClock class="w-10 h-10 text-slate-200" />
-            <p class="text-sm text-slate-400">解析后将显示结构化时间轴</p>
-            <p class="text-xs text-slate-300">点击时间点可跳转到视频对应位置</p>
+            <p class="text-sm text-slate-500">章节、原文和你的笔记</p>
+            <p class="max-w-[240px] text-center text-xs leading-6 text-slate-400">
+              打开资料后，在这里检索内容、收藏重点和记录理解。
+            </p>
           </div>
 
           <!-- 解析中：默认简洁，悬停展开完整日志 -->

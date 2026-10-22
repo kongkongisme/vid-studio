@@ -59,12 +59,30 @@ test('real IPC preserves imported sources, notes, exports and preferences across
     expect(initial.preferences.autoImportCookies).toBe(false)
     expect(Object.values(initial.secrets).every((item) => !item.configured)).toBe(true)
 
+    await page.getByRole('button', { name: '打开离线示例', exact: true }).click()
+    await expect(
+      page.getByRole('heading', { name: '从看过到记住：三步整理学习笔记' })
+    ).toBeVisible()
+    await page.getByRole('button', { name: '写笔记', exact: true }).first().click()
+    await page
+      .getByRole('textbox', { name: '我的笔记' })
+      .fill('下次读书时，先写下一个想解决的问题，再挑选值得复习的段落。')
+    await expect(page.getByText('已保存到本机', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '收起笔记', exact: true }).click()
+    await page.getByRole('button', { name: '收藏片段', exact: true }).first().click()
+    await expect(page.getByRole('button', { name: '取消收藏片段' })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    )
+    await page.screenshot({ path: testInfo.outputPath('offline-demo-native.png') })
+
     await page.getByLabel('选择字幕或笔记文件').setInputFiles({
       name: '离线课程.srt',
       mimeType: 'text/plain',
       buffer: Buffer.from(subtitle)
     })
     await expect(page.getByRole('article', { name: '导入资料阅读器' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '离线课程', exact: true })).toBeVisible()
     const reader = (): ReturnType<Page['getByRole']> =>
       page!.getByRole('article', { name: '导入资料阅读器' })
     const firstTitle = await reader().getByRole('heading', { level: 2 }).textContent()

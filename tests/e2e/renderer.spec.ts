@@ -11,6 +11,8 @@ import {
 interface MockState {
   clipboardReads: number
   cookieImports: number
+  parseCalls: number
+  cachedSources: string[]
   failLoad: boolean
   deferDiagnosis: boolean
   finishDiagnosis?: (report: DiagnosticReport) => void
@@ -38,6 +40,8 @@ async function installApi(page: Page): Promise<void> {
     const state: MockState = {
       clipboardReads: 0,
       cookieImports: 0,
+      parseCalls: 0,
+      cachedSources: [],
       failLoad: false,
       deferDiagnosis: false
     }
@@ -83,11 +87,20 @@ async function installApi(page: Page): Promise<void> {
       },
       getConversation: async () => [],
       getAnnotations: async () => [],
+      saveAnnotation: async (input) => ({ ...input, updatedAt: Date.now() }),
+      getReadingPosition: async () => null,
+      saveReadingPosition: async (input) => ({ ...input, updatedAt: Date.now() }),
+      setCache: async (key) => {
+        state.cachedSources.push(key)
+      },
+      addHistory: async () => undefined,
       onParseProgress: () => () => undefined,
-      parseVideo: () =>
-        new Promise((resolve) => {
+      parseVideo: () => {
+        state.parseCalls++
+        return new Promise((resolve) => {
           state.finishParse = () => resolve({ success: false, error: '已停止解析' })
-        }),
+        })
+      },
       stopParse: () =>
         new Promise((resolve) => {
           state.finishStop = resolve
@@ -207,4 +220,33 @@ test('keeps source controls locked until the background process tree has stopped
   await page.evaluate(() => window.mockState.finishStop?.())
   await expect(page.getByRole('button', { name: '一键解析', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '打开资料库' })).toBeEnabled()
+})
+
+test('opens the built-in example offline and navigates adjacent chapter boundaries correctly', async ({
+  page
+}) => {
+  await page.setViewportSize({ width: 900, height: 600 })
+  await expect(page.getByRole('button', { name: '打开设置与诊断' })).toBeInViewport()
+  await expect(page.getByRole('button', { name: '打开资料库' })).toBeInViewport()
+  await expect(page.getByRole('button', { name: '一键解析', exact: true })).toBeInViewport()
+  await page.screenshot({ path: test.info().outputPath('welcome-small.png') })
+  await page.getByRole('button', { name: '打开离线示例', exact: true }).click()
+  const reader = page.getByRole('article', { name: '导入资料阅读器' })
+  await expect(
+    reader.getByRole('heading', { name: '从看过到记住：三步整理学习笔记' })
+  ).toBeVisible()
+  await expect(reader.getByText(/虚构示例/)).toBeVisible()
+  await page
+    .locator('[id^="timeline-"]')
+    .getByText('用自己的话补上一句理解', { exact: true })
+    .click()
+  await expect(reader.getByRole('heading', { level: 2 })).toHaveText('用自己的话补上一句理解')
+  await expect(reader.getByText('阅读位置已保存', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '写笔记', exact: true }).first().click()
+  await page.getByRole('textbox', { name: '我的笔记' }).fill('先确定问题，再挑选原文。')
+  await expect(page.getByText('已保存到本机', { exact: true })).toBeVisible()
+  expect(await page.evaluate(() => window.mockState.parseCalls)).toBe(0)
+  expect(await page.evaluate(() => window.mockState.cachedSources)).toHaveLength(1)
+  await expect(page.getByRole('button', { name: '导出', exact: true })).toBeEnabled()
+  await page.screenshot({ path: test.info().outputPath('demo-small.png') })
 })
