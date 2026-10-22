@@ -1,5 +1,6 @@
 import type { AnnotationInput, ChunkAnnotation } from '../shared/annotations'
 import type { HistoryItem } from '../shared/history'
+import type { SettingsSnapshot, SettingsUpdate, DiagnosticReport } from '../shared/settings'
 import type { ChatRequest, ChatResult, ChatEvent, ChatMessage } from '../shared/chat'
 import type { LibraryQuery, LibraryResult } from '../shared/library'
 import type { TimelineExportPayload, TextExportFormat } from '../shared/export'
@@ -51,7 +52,14 @@ interface LocalPlaybackProgress {
 }
 
 const api = {
-  // 启动时从 Edge/Chrome 导入 B 站 cookies
+  // 本机设置与诊断
+  getSettings: (): Promise<SettingsSnapshot> => ipcRenderer.invoke('get-settings'),
+  saveSettings: (update: SettingsUpdate): Promise<SettingsSnapshot> =>
+    ipcRenderer.invoke('save-settings', update),
+  choosePython: (): Promise<string | null> => ipcRenderer.invoke('choose-python'),
+  diagnoseEnvironment: (): Promise<DiagnosticReport> => ipcRenderer.invoke('diagnose-environment'),
+  openDataDirectory: (): Promise<string> => ipcRenderer.invoke('open-data-directory'),
+  // 用户手动同步，或启用启动时同步偏好后，从 Edge/Chrome 导入 B 站 cookies
   importBrowserCookies: (): Promise<CookieImportResult> =>
     ipcRenderer.invoke('import-browser-cookies'),
 

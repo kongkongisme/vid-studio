@@ -20,7 +20,8 @@
     "build:mac": "npm run build && electron-builder --mac",
     "build:linux": "npm run build && electron-builder --linux",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:electron": "npm run build && playwright test --project=electron"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
@@ -40,6 +41,7 @@
     "@electron-toolkit/eslint-config-prettier": "3.0.0",
     "@electron-toolkit/eslint-config-ts": "^3.1.0",
     "@electron-toolkit/tsconfig": "^2.0.0",
+    "@playwright/test": "^1.64.1",
     "@tailwindcss/vite": "^4.2.1",
     "@types/jsdom": "^30.0.0",
     "@types/node": "^22.19.1",

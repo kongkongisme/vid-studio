@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, session, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, session, dialog, safeStorage } from 'electron'
 import { getHistory, addHistory, toggleFavorite, deleteHistory, renameHistory } from './history'
 import {
   getCachedContent,
@@ -24,9 +24,9 @@ import { readChatStream, type StreamToolCall } from './chat-stream'
 import { buildTimelineExportHtml, type TimelineExportPayload } from './timeline-export'
 import { buildTextExport, EXPORT_FORMATS, safeExportFilename } from '../shared/timeline-formats'
 import type { TextExportFormat } from '../shared/export'
-import { extname, join } from 'path'
+import { extname, join, resolve } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import { spawn, spawnSync, execSync, type ChildProcess } from 'child_process'
+import { spawn, execSync, type ChildProcess } from 'child_process'
 import { existsSync, mkdirSync, statSync } from 'fs'
 import { readFile, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
@@ -34,56 +34,53 @@ import { createHash } from 'crypto'
 import { StringDecoder } from 'string_decoder'
 import { pathToFileURL } from 'url'
 import icon from '../../resources/icon.png?asset'
+import { SettingsStore } from './settings-store'
+import { PythonRuntime, pythonCandidates, PYTHON_MODULES } from './python-runtime'
+import { buildDiagnosticReport, engineAvailable, probeMediaTool } from './diagnostics'
+import type { SettingsUpdate } from '../shared/settings'
+
+if (process.env.VID_STUDIO_DATA_DIR) {
+  const dataDirectory = resolve(process.env.VID_STUDIO_DATA_DIR)
+  mkdirSync(dataDirectory, { recursive: true })
+  app.setPath('userData', dataDirectory)
+}
 
 const vidEnginePath = is.dev
   ? join(process.cwd(), 'vid-engine')
   : join(process.resourcesPath, 'vid-engine')
 
-function getPythonCandidates(): string[] {
-  const executable = process.platform === 'win32' ? 'python.exe' : 'python3'
-  const alternate = process.platform === 'win32' ? 'python.exe' : 'python'
-  const localVenv =
-    process.platform === 'win32'
-      ? join(vidEnginePath, '.venv', 'Scripts', 'python.exe')
-      : join(vidEnginePath, '.venv', 'bin', 'python')
-  const pathCandidates = (process.env.PATH ?? '')
-    .split(process.platform === 'win32' ? ';' : ':')
-    .filter(Boolean)
-    .flatMap((dir) => [join(dir, executable), join(dir, alternate)])
-
-  return [
-    process.env.VID_STUDIO_PYTHON,
-    localVenv,
-    process.env.CONDA_PREFIX
-      ? join(process.env.CONDA_PREFIX, process.platform === 'win32' ? 'python.exe' : 'bin/python')
-      : undefined,
-    ...pathCandidates,
-    process.platform === 'win32' ? 'python' : 'python3',
-    'python'
-  ].filter(
-    (candidate, index, all): candidate is string =>
-      Boolean(candidate) && all.indexOf(candidate) === index
+let settingsStore: SettingsStore | null = null
+function getSettingsStore(): SettingsStore {
+  settingsStore ??= new SettingsStore(
+    join(app.getPath('userData'), 'settings.json'),
+    process.env.VID_STUDIO_ENV_FILE || join(vidEnginePath, '.env'),
+    {
+      available: () =>
+        safeStorage.isEncryptionAvailable() &&
+        (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'),
+      encrypt: (value) => safeStorage.encryptString(value),
+      decrypt: (value) => safeStorage.decryptString(value)
+    }
   )
+  return settingsStore
 }
 
-function resolvePythonBin(): string {
-  for (const candidate of getPythonCandidates()) {
-    if (candidate.includes('/') && !existsSync(candidate)) continue
-    const probe = spawnSync(
-      candidate,
-      ['-c', 'import dotenv, numpy, openai, PIL, requests, yt_dlp'],
-      {
-        env: process.env,
-        timeout: 5000,
-        stdio: 'ignore'
-      }
-    )
-    if (probe.status === 0) return candidate
-  }
-  return process.platform === 'win32' ? 'python' : 'python3'
-}
+const pythonRuntime = new PythonRuntime(async () => {
+  const settings = await getSettingsStore().snapshot()
+  return pythonCandidates(vidEnginePath, settings.preferences.pythonPath)
+})
 
-const pythonBin = resolvePythonBin()
+async function requirePython(modules = PYTHON_MODULES): Promise<string> {
+  const probe = await pythonRuntime.resolve()
+  if (!probe.supported)
+    throw new Error('需要 Python 3.10 或更新版本。请打开「设置与诊断」检查环境。')
+  const missing = modules.filter(
+    (name) => !probe.modules.some((module) => module.name === name && module.available)
+  )
+  if (missing.length)
+    throw new Error(`Python 缺少或无法加载依赖：${missing.join('、')}。请打开「设置与诊断」修复。`)
+  return probe.command
+}
 
 // ─── 代理检测：将系统代理注入 Python 子进程 ────────────────
 // Electron webview 会自动走系统代理，但 spawn 出的子进程不会，需手动传入。
@@ -119,9 +116,12 @@ function detectSystemProxy(): string | null {
 // 启动时检测一次，避免每次 spawn 重复调用
 const PROXY_URL = detectSystemProxy()
 
-function buildSpawnEnv(): NodeJS.ProcessEnv {
+async function buildSpawnEnv(): Promise<NodeJS.ProcessEnv> {
+  const configured = await getSettingsStore().values()
   const env = {
     ...process.env,
+    ...configured,
+    VID_CACHE_DIR: configured.VID_CACHE_DIR || join(app.getPath('userData'), 'engine-cache'),
     PYTHONUNBUFFERED: '1'
   }
   if (!PROXY_URL) return env
@@ -137,13 +137,7 @@ function buildSpawnEnv(): NodeJS.ProcessEnv {
 // ─── 工具：读取 .env key / 运行 Python 脚本 ──────────────
 
 async function readEnvKey(key: string): Promise<string> {
-  try {
-    const content = await readFile(join(vidEnginePath, '.env'), 'utf-8')
-    const match = content.match(new RegExp(`^${key}=(.+)$`, 'm'))
-    return match ? match[1].trim().replace(/^["']|["']$/g, '') : ''
-  } catch {
-    return ''
-  }
+  return (await getSettingsStore().values())[key] ?? ''
 }
 
 type LlmProvider = 'deepseek' | 'gpt-5.6-sol'
@@ -182,33 +176,32 @@ function getChatCompletionsUrl(baseUrl: string): string {
 
 async function resolveLlmConnection(provider?: string): Promise<LlmConnection> {
   const normalized = normalizeLlmProvider(provider)
+  const configuration = await getSettingsStore().values()
   if (normalized === 'gpt-5.6-sol') {
-    const [apiKey, baseUrl, model, reasoningEffort] = await Promise.all([
-      readEnvKey('GPT_API_KEY'),
-      readEnvKey('GPT_BASE_URL'),
-      readEnvKey('GPT_MODEL'),
-      readEnvKey('GPT_REASONING_EFFORT')
-    ])
+    const [apiKey, baseUrl, model, reasoningEffort] = [
+      'GPT_API_KEY',
+      'GPT_BASE_URL',
+      'GPT_MODEL',
+      'GPT_REASONING_EFFORT'
+    ].map((key) => configuration[key] ?? '')
     if (!apiKey) {
-      throw new Error('未配置 GPT_API_KEY，请在 vid-engine/.env 中设置')
+      throw new Error('未配置兼容接口的 API Key，请打开「设置与诊断」填写')
     }
     return {
       provider: normalized,
-      label: 'GPT-5.6 Sol',
+      label: '自定义接口',
       apiKey,
       baseUrl: baseUrl || 'https://api.openai.com/v1',
       model: model || 'gpt-5.6-sol',
-      reasoningEffort: reasoningEffort || 'high'
+      reasoningEffort: reasoningEffort === 'omit' ? undefined : reasoningEffort || 'high'
     }
   }
 
-  const [apiKey, baseUrl, model] = await Promise.all([
-    readEnvKey('DEEPSEEK_API_KEY'),
-    readEnvKey('DEEPSEEK_BASE_URL'),
-    readEnvKey('DEEPSEEK_MODEL')
-  ])
+  const [apiKey, baseUrl, model] = ['DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_MODEL'].map(
+    (key) => configuration[key] ?? ''
+  )
   if (!apiKey) {
-    throw new Error('未配置 DEEPSEEK_API_KEY，请在 vid-engine/.env 中设置')
+    throw new Error('未配置 DeepSeek API Key，请打开「设置与诊断」填写')
   }
   return {
     provider: normalized,
@@ -267,12 +260,14 @@ function createLlmCallReceipt(
 }
 
 // ─── 工具：运行 Python 脚本并收集 stdout ──────────────────
-function runPython(scriptName: string, args: string[] = []): Promise<string> {
+async function runPython(scriptName: string, args: string[] = []): Promise<string> {
+  const pythonBin = await requirePython(['yt_dlp'])
+  const env = await buildSpawnEnv()
   return new Promise((resolve, reject) => {
     let out = ''
     const proc = spawn(pythonBin, [scriptName, ...args], {
       cwd: vidEnginePath,
-      env: buildSpawnEnv()
+      env
     })
     proc.stdout.on('data', (d: Buffer) => (out += d.toString()))
     proc.on('close', () => resolve(out))
@@ -673,15 +668,31 @@ async function generateSummaryDocumentTitle(
 
 // 记录当前解析进程，用于停止
 let currentParseProc: ChildProcess | null = null
+let parsePreparing = false
+let parseGeneration = 0
 let currentPlaybackProc: ChildProcess | null = null
 
-function runParseProcess(
+async function runParseProcess(
   event: Electron.IpcMainInvokeEvent,
   args: string[],
   outputPath: string
 ): Promise<ParseResult> {
+  if (currentParseProc || parsePreparing)
+    return { success: false, error: '已有解析任务正在运行，请先停止。' }
+  const generation = ++parseGeneration
+  parsePreparing = true
+  let pythonBin: string
+  let env: NodeJS.ProcessEnv
+  try {
+    ;[pythonBin, env] = await Promise.all([requirePython(), buildSpawnEnv()])
+  } catch (error) {
+    if (generation === parseGeneration) parsePreparing = false
+    return { success: false, error: String(error) }
+  }
+  if (generation !== parseGeneration) return { success: false, error: '已停止解析' }
+  parsePreparing = false
   return new Promise<ParseResult>((resolve) => {
-    const proc = spawn(pythonBin, args, { cwd: vidEnginePath, env: buildSpawnEnv() })
+    const proc = spawn(pythonBin, args, { cwd: vidEnginePath, env })
     currentParseProc = proc
     const receiptPrefix = '__VID_STUDIO_LLM_RECEIPT__'
     const stdoutDecoder = new StringDecoder('utf8')
@@ -701,6 +712,7 @@ function runParseProcess(
     }
 
     const processStdout = (text: string, flush = false): void => {
+      if (generation !== parseGeneration || event.sender.isDestroyed()) return
       stdoutBuffer += text
       const lines = stdoutBuffer.split('\n')
       const remainder = lines.pop() ?? ''
@@ -724,6 +736,7 @@ function runParseProcess(
     }
 
     const processStderr = (text: string): void => {
+      if (generation !== parseGeneration || event.sender.isDestroyed()) return
       for (const line of text.split(/\r?\n/)) rememberLine(line)
       event.sender.send('parse-progress', text)
     }
@@ -734,9 +747,9 @@ function runParseProcess(
     proc.on('close', async (code, signal) => {
       processStdout(stdoutDecoder.end(), true)
       processStderr(stderrDecoder.end())
-      currentParseProc = null
+      if (currentParseProc === proc) currentParseProc = null
       // 用户主动停止
-      if (signal) {
+      if (signal || generation !== parseGeneration) {
         resolve({ success: false, error: '已停止解析' })
         return
       }
@@ -768,7 +781,7 @@ function runParseProcess(
     })
 
     proc.on('error', (err: NodeJS.ErrnoException) => {
-      currentParseProc = null
+      if (currentParseProc === proc) currentParseProc = null
       resolve({
         success: false,
         error: err.code === 'ENOENT' ? '未找到 Python 环境，请确认已安装 python3' : err.message
@@ -939,6 +952,8 @@ ipcMain.handle('export-timeline-document', async (_, payload: TimelineExportPayl
 
 // ─── IPC：停止解析 ────────────────────────────────────────
 ipcMain.handle('stop-parse', () => {
+  parseGeneration++
+  parsePreparing = false
   if (currentParseProc) {
     currentParseProc.kill()
     currentParseProc = null
@@ -1132,6 +1147,40 @@ ipcMain.handle('chat-with-video', async (event, request: ChatRequest): Promise<C
   }
 })
 
+// ─── IPC：设置与本地诊断 ──────────────────────────────────
+ipcMain.handle('get-settings', () => getSettingsStore().snapshot())
+ipcMain.handle('save-settings', async (_, update: SettingsUpdate) => {
+  await getSettingsStore().save(update)
+  pythonRuntime.invalidate()
+  return getSettingsStore().snapshot()
+})
+ipcMain.handle('choose-python', async () => {
+  const result = await dialog.showOpenDialog({
+    title: '选择 Python 程序',
+    properties: ['openFile']
+  })
+  return result.canceled ? null : (result.filePaths[0] ?? null)
+})
+ipcMain.handle('open-data-directory', () => shell.openPath(app.getPath('userData')))
+ipcMain.handle('diagnose-environment', async () => {
+  const [settings, python, present, ffmpeg, ffprobe] = await Promise.all([
+    getSettingsStore().snapshot(),
+    pythonRuntime.resolve(true),
+    engineAvailable(vidEnginePath),
+    probeMediaTool('ffmpeg'),
+    probeMediaTool('ffprobe')
+  ])
+  return buildDiagnosticReport({
+    appVersion: app.getVersion(),
+    platform: process.platform,
+    settings,
+    python,
+    enginePresent: present,
+    ffmpeg,
+    ffprobe
+  })
+})
+
 // ─── IPC：历史管理 ────────────────────────────────────────
 
 ipcMain.handle('get-history', () => getHistory())
@@ -1214,6 +1263,12 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+app.on('before-quit', () => {
+  parseGeneration++
+  currentParseProc?.kill()
+  currentPlaybackProc?.kill()
 })
 
 app.on('window-all-closed', () => {

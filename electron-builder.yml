@@ -9,6 +9,23 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!vid-engine/**'
+  - '!tests/**'
+  - '!docs/**'
+  - '!vitest.config.*'
+  - '!playwright.config.*'
+  - '!test-results/**'
+  - '!playwright-report/**'
+  - '!**/.env'
+  - '!**/.env.*'
+extraResources:
+  - from: vid-engine
+    to: vid-engine
+    filter:
+      - '*.py'
+      - 'src/**/*.py'
+      - 'requirements.txt'
+      - '.env.example'
 asarUnpack:
   - resources/**
 win:

@@ -1,5 +1,6 @@
 import type { AnnotationInput, ChunkAnnotation } from '../shared/annotations'
 import type { HistoryItem } from '../shared/history'
+import type { SettingsSnapshot, SettingsUpdate, DiagnosticReport } from '../shared/settings'
 import type { ChatRequest, ChatResult, ChatEvent, ChatMessage } from '../shared/chat'
 import type { LibraryQuery, LibraryResult } from '../shared/library'
 import type { TimelineExportPayload, TextExportFormat } from '../shared/export'
@@ -53,6 +54,11 @@ declare global {
   interface Window {
     electron: ElectronAPI
     api: {
+      getSettings: () => Promise<SettingsSnapshot>
+      saveSettings: (update: SettingsUpdate) => Promise<SettingsSnapshot>
+      choosePython: () => Promise<string | null>
+      diagnoseEnvironment: () => Promise<DiagnosticReport>
+      openDataDirectory: () => Promise<string>
       importBrowserCookies: () => Promise<CookieImportResult>
       importYoutubeCookies: () => Promise<CookieImportResult>
       parseVideo: (

@@ -58,6 +58,8 @@ def load_config() -> "Config":
         c.llm_model = os.environ.get("GPT_MODEL", "gpt-5.6-sol")
         c.llm_base_url = os.environ.get("GPT_BASE_URL", "https://api.openai.com/v1")
         c.llm_reasoning_effort = os.environ.get("GPT_REASONING_EFFORT", "high")
+        if c.llm_reasoning_effort == "omit":
+            c.llm_reasoning_effort = ""
     else:
         c.llm_api_key = c.deepseek_api_key
         c.llm_model = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
