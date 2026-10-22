@@ -6,9 +6,21 @@ import {
   deleteCachedContent,
   getCachedUrls,
   getAnnotationStore,
-  getLibraryIndex
+  getLibraryIndex,
+  getChatStore
 } from './cache'
 import type { LibraryQuery } from '../shared/library'
+import {
+  validateChatRequest,
+  validateConversation,
+  MAX_CHAT_CHARACTERS,
+  conversationMarkdown,
+  type ChatRequest,
+  type ChatMessage,
+  type ChatResult
+} from '../shared/chat'
+import { ChatRequests } from './chat-requests'
+import { readChatStream, type StreamToolCall } from './chat-stream'
 import { buildTimelineExportHtml, type TimelineExportPayload } from './timeline-export'
 import { buildTextExport, EXPORT_FORMATS, safeExportFilename } from '../shared/timeline-formats'
 import type { TextExportFormat } from '../shared/export'
@@ -935,244 +947,190 @@ ipcMain.handle('stop-parse', () => {
 
 // ─── IPC：LLM 对话（流式，支持 Tavily 互联网搜索工具） ────
 
-interface ApiChatMessage {
-  role: string
-  content: string
-}
-
-// 内部消息类型，支持 tool_calls / tool role
 interface InternalMessage {
   role: string
   content: string | null
-  tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[]
+  tool_calls?: StreamToolCall[]
   tool_call_id?: string
 }
 
+const chatRequests = new ChatRequests()
+
+ipcMain.handle('stop-chat', (event, requestId: string) =>
+  chatRequests.cancel(event.sender.id, requestId)
+)
+ipcMain.handle('get-conversation', (_, sourceKey: string) => getChatStore().load(sourceKey))
+ipcMain.handle('save-conversation', (_, sourceKey: string, messages: ChatMessage[]) =>
+  getChatStore().save(sourceKey, messages)
+)
 ipcMain.handle(
-  'chat-with-video',
-  async (event, messages: ApiChatMessage[], provider: LlmProvider = 'deepseek') => {
-    let connection: LlmConnection
+  'export-conversation',
+  async (_, sourceKey: string, title: string, input: ChatMessage[]) => {
     try {
-      connection = await resolveLlmConnection(provider)
+      const messages = validateConversation(sourceKey, input, MAX_CHAT_CHARACTERS * 2)
+      if (typeof title !== 'string' || title.length > 1000) throw new Error('对话标题无效')
+      if (!messages.length) throw new Error('当前没有可导出的对话')
+      const destination = await dialog.showSaveDialog({
+        title: '导出对话记录',
+        defaultPath: `${safeExportFilename(title)}-对话.md`,
+        filters: [{ name: 'Markdown', extensions: ['md'] }]
+      })
+      if (destination.canceled || !destination.filePath) return { success: false, canceled: true }
+      await writeFile(destination.filePath, conversationMarkdown(title, messages), 'utf8')
+      return { success: true, path: destination.filePath }
     } catch (error) {
       return { success: false, error: String(error) }
     }
+  }
+)
 
+ipcMain.handle('chat-with-video', async (event, request: ChatRequest): Promise<ChatResult> => {
+  try {
+    validateChatRequest(request)
+  } catch (error) {
+    return { success: false, error: String(error) }
+  }
+  const owner = event.sender.id
+  const { signal, finish } = chatRequests.begin(owner, request.requestId)
+  const abortOnClose = (): void => chatRequests.cancel(owner, request.requestId)
+  event.sender.once('destroyed', abortOnClose)
+  const send = (type: 'delta' | 'search', text: string): void => {
+    if (!signal.aborted && !event.sender.isDestroyed())
+      event.sender.send('chat-event', { requestId: request.requestId, type, text })
+  }
+  try {
+    const connection = await resolveLlmConnection(request.provider)
     const tavilyKey = await readEnvKey('TAVILY_API_KEY')
-
-    // 工具定义（仅在配置了 Tavily API Key 时启用）
-    const tools = tavilyKey
-      ? [
-          {
-            type: 'function',
-            function: {
-              name: 'web_search',
-              description:
-                '搜索互联网获取实时信息。仅当以下情况才调用：(1) 需要视频发布后的最新动态；(2) 需要具体数字/日期/事实且无法从视频内容或已有知识确认；(3) 用户明确要求搜索。若视频内容或模型已有知识已足够回答，不得调用此工具。判断需要搜索时直接调用，不要询问用户。',
-              parameters: {
-                type: 'object',
-                properties: {
-                  query: { type: 'string', description: '搜索关键词' }
-                },
-                required: ['query']
-              }
-            }
-          }
-        ]
-      : null
-
-    // 流式调用当前模型，同时检测工具调用
+    signal.throwIfAborted()
+    const searchTool = {
+      type: 'function',
+      function: {
+        name: 'web_search',
+        description:
+          '搜索互联网获取实时信息。仅在需要最新动态、无法从视频与已有知识确认的具体事实，或用户明确要求搜索时调用。优先使用视频内容。',
+        parameters: {
+          type: 'object',
+          properties: { query: { type: 'string', description: '搜索关键词' } },
+          required: ['query']
+        }
+      }
+    }
     const streamLLM = async (
-      msgs: InternalMessage[],
+      messages: InternalMessage[],
       noTools = false
     ): Promise<{
       content: string
       receipt: LlmCallReceipt
-      toolCall?: { id: string; name: string; args: string }
+      toolCalls: StreamToolCall[]
+      finishReason: string
     }> => {
+      signal.throwIfAborted()
       const startedAt = Date.now()
       const body: Record<string, unknown> = {
         model: connection.model,
-        messages: msgs,
+        messages,
         max_tokens: 2000,
         stream: true
       }
       applyModelTuning(body, connection, 0.7)
-      if (tools && !noTools) {
-        body.tools = tools
+      if (tavilyKey && !noTools) {
+        body.tools = [searchTool]
         body.tool_choice = 'auto'
       }
-
       const response = await fetch(getChatCompletionsUrl(connection.baseUrl), {
         method: 'POST',
+        signal,
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${connection.apiKey}`
         },
         body: JSON.stringify(body)
       })
-
-      if (!response.ok) {
-        throw new Error(`API 错误: ${response.status} ${await response.text()}`)
-      }
-
-      const reader = response.body?.getReader()
-      if (!reader) throw new Error('无法读取响应流')
-
-      const decoder = new TextDecoder()
-      let buffer = ''
-      let content = ''
-      let toolCallId = ''
-      let toolCallName = ''
-      let toolCallArgs = ''
-      let finishReason = ''
-      let responseModel = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() ?? ''
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          const data = line.slice(6).trim()
-          if (data === '[DONE]') continue
-          try {
-            const parsed = JSON.parse(data) as {
-              model?: string
-              choices: {
-                delta: {
-                  content?: string
-                  tool_calls?: {
-                    index: number
-                    id?: string
-                    function?: { name?: string; arguments?: string }
-                  }[]
-                }
-                finish_reason: string | null
-              }[]
-            }
-            if (parsed.model) responseModel = parsed.model
-            const choice = parsed.choices[0]
-            if (!choice) continue
-            if (choice.finish_reason) finishReason = choice.finish_reason
-            const delta = choice.delta
-            if (delta.content) {
-              content += delta.content
-              event.sender.send('chat-stream-chunk', delta.content)
-            }
-            const tc = delta.tool_calls?.[0]
-            if (tc) {
-              if (tc.id) toolCallId = tc.id
-              if (tc.function?.name) toolCallName += tc.function.name
-              if (tc.function?.arguments) toolCallArgs += tc.function.arguments
-            }
-          } catch {
-            // 跳过解析失败的行
-          }
-        }
-      }
-
+      if (!response.ok)
+        throw new Error(`模型服务返回 HTTP ${response.status}，请检查模型设置或稍后重试。`)
+      const streamed = await readChatStream(response, signal, (delta) => send('delta', delta))
       const receipt = createLlmCallReceipt(connection, '视频对话', startedAt, {
-        responseModel,
+        responseModel: streamed.responseModel,
         requestId: getResponseRequestId(response.headers)
       })
-      if (finishReason === 'tool_calls' && toolCallName) {
-        return {
-          content,
-          receipt,
-          toolCall: { id: toolCallId, name: toolCallName, args: toolCallArgs }
-        }
-      }
-      return { content, receipt }
+      return { ...streamed, receipt }
     }
-
-    try {
-      const internalMessages: InternalMessage[] = messages.map((m) => ({
-        role: m.role,
-        content: m.content
-      }))
-
-      // 第一轮：LLM 响应（配置了 Tavily 时携带工具定义）
-      const phase1 = await streamLLM(internalMessages)
-
-      if (!phase1.toolCall) {
-        // 无工具调用，直接结束
-        return { success: true, llmReceipt: phase1.receipt }
-      }
-
-      let finalReceipt = phase1.receipt
-
-      // 处理 web_search 工具调用
-      const { id, name, args } = phase1.toolCall
-      if (name === 'web_search' && tavilyKey) {
-        let searchResult = '搜索未返回有效结果'
-        try {
-          const parsedArgs = JSON.parse(args) as { query: string }
-          const query = parsedArgs.query
-
-          // 通知渲染层搜索关键词（独立事件，不污染消息正文）
-          event.sender.send('chat-search-query', query)
-
-          const tavilyResp = await fetch('https://api.tavily.com/search', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              api_key: tavilyKey,
-              query,
-              search_depth: 'basic',
-              max_results: 5,
-              include_answer: true
+    const internalMessages: InternalMessage[] = request.messages.map((message) => ({ ...message }))
+    const phase1 = await streamLLM(internalMessages)
+    let final = phase1
+    if (phase1.toolCalls.length) {
+      const toolResults: InternalMessage[] = []
+      for (const call of phase1.toolCalls) {
+        signal.throwIfAborted()
+        let content = '此搜索工具不可用。请基于现有资料回答，并说明资料不足之处。'
+        if (call.function.name === 'web_search' && tavilyKey) {
+          try {
+            const args = JSON.parse(call.function.arguments) as { query: string }
+            if (typeof args.query !== 'string' || !args.query.trim() || args.query.length > 1000)
+              throw new Error('搜索关键词无效')
+            send('search', args.query)
+            const response = await fetch('https://api.tavily.com/search', {
+              method: 'POST',
+              signal,
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                api_key: tavilyKey,
+                query: args.query,
+                search_depth: 'basic',
+                max_results: 5,
+                include_answer: true
+              })
             })
-          })
-
-          if (tavilyResp.ok) {
-            const tavilyData = (await tavilyResp.json()) as {
+            if (!response.ok) throw new Error(`搜索请求失败（HTTP ${response.status}）`)
+            const found = (await response.json()) as {
               answer?: string
               results?: { title: string; url: string; content: string }[]
             }
-            const parts: string[] = []
-            if (tavilyData.answer) parts.push(`摘要：${tavilyData.answer}`)
-            if (tavilyData.results?.length) {
-              parts.push(
-                tavilyData.results
-                  .map((r) => `标题：${r.title}\n链接：${r.url}\n内容：${r.content}`)
-                  .join('\n---\n')
-              )
-            }
-            searchResult = parts.join('\n\n') || searchResult
-          } else {
-            searchResult = `搜索请求失败（HTTP ${tavilyResp.status}）`
+            content =
+              [
+                found.answer ?? '',
+                ...(found.results ?? [])
+                  .slice(0, 5)
+                  .map((item) => `标题：${item.title}\n链接：${item.url}\n内容：${item.content}`)
+              ]
+                .join('\n\n')
+                .slice(0, 12000) || '搜索未返回有效结果'
+          } catch (error) {
+            signal.throwIfAborted()
+            content = `搜索未完成：${String(error)}。请明确说明这一限制。`
           }
-        } catch (e) {
-          searchResult = `搜索出错：${String(e)}`
         }
-
-        // 组装含工具结果的消息，发起第二轮对话
-        const msgsWithTool: InternalMessage[] = [
-          ...internalMessages,
-          {
-            role: 'assistant',
-            content: phase1.content || null,
-            tool_calls: [{ id, type: 'function', function: { name, arguments: args } }]
-          },
-          { role: 'tool', content: searchResult, tool_call_id: id }
-        ]
-
-        // noTools=true，避免第二轮再次触发搜索
-        const phase2 = await streamLLM(msgsWithTool, true)
-        finalReceipt = phase2.receipt
+        toolResults.push({ role: 'tool', content, tool_call_id: call.id })
       }
-
-      return { success: true, llmReceipt: finalReceipt }
-    } catch (e) {
-      return { success: false, error: String(e) }
+      final = await streamLLM(
+        [
+          ...internalMessages,
+          { role: 'assistant', content: phase1.content || null, tool_calls: phase1.toolCalls },
+          ...toolResults
+        ],
+        true
+      )
     }
+    if (final.toolCalls.length) throw new Error('模型未能完成搜索后的回答，请重试。')
+    if (final.finishReason === 'length')
+      return {
+        success: false,
+        llmReceipt: final.receipt,
+        error: '回答达到长度上限，已保留内容。可以发送「继续」接着提问。'
+      }
+    return { success: true, llmReceipt: final.receipt }
+  } catch (error) {
+    if (signal.aborted) {
+      if (signal.reason?.name === 'TimeoutError')
+        return { success: false, error: '回答超过 3 分钟，已停止请求。请重试或缩小问题范围。' }
+      return { success: false, canceled: true }
+    }
+    return { success: false, error: String(error).slice(0, 2000) }
+  } finally {
+    event.sender.removeListener('destroyed', abortOnClose)
+    finish()
   }
-)
+})
 
 // ─── IPC：历史管理 ────────────────────────────────────────
 

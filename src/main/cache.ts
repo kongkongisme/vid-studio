@@ -4,12 +4,14 @@ import path from 'path'
 import { mkdirSync } from 'fs'
 import { AnnotationStore } from './annotation-store'
 import { LibraryIndex } from './library-index'
+import { ChatStore } from './chat-store'
 
 import { DatabaseSync } from 'node:sqlite'
 
 let db: DatabaseSync | null = null
 let annotationStore: AnnotationStore | null = null
 let libraryIndex: LibraryIndex | null = null
+let chatStore: ChatStore | null = null
 
 function getDb(): DatabaseSync {
   if (!db) {
@@ -22,6 +24,7 @@ function getDb(): DatabaseSync {
       db = null
       annotationStore = null
       libraryIndex = null
+      chatStore = null
     })
     db.exec(`
       CREATE TABLE IF NOT EXISTS video_cache (
@@ -77,4 +80,9 @@ export function getLibraryIndex(): LibraryIndex {
   getAnnotationStore()
   libraryIndex ??= new LibraryIndex(getDb())
   return libraryIndex
+}
+
+export function getChatStore(): ChatStore {
+  chatStore ??= new ChatStore(getDb())
+  return chatStore
 }

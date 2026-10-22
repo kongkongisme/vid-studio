@@ -17,6 +17,15 @@ const index = computed(() =>
   )
 )
 const chunk = computed(() => props.document.chunks[index.value])
+const focusedLine = computed(() => {
+  if (props.focusSeconds === null || !chunk.value) return -1
+  const exact = chunk.value.transcript.findIndex((line) => line.seconds === props.focusSeconds)
+  return exact >= 0
+    ? exact
+    : chunk.value.transcript.findIndex(
+        (line) => Math.floor(line.seconds) === Math.floor(props.focusSeconds!)
+      )
+})
 const sentenceCount = computed(() =>
   props.document.chunks.reduce((total, chunk) => total + chunk.transcript.length, 0)
 )
@@ -25,9 +34,9 @@ watch(
   async () => {
     await nextTick()
     const target =
-      props.focusSeconds === null
+      focusedLine.value < 0
         ? null
-        : body.value?.querySelector<HTMLElement>(`[data-reader-seconds="${props.focusSeconds}"]`)
+        : body.value?.querySelector<HTMLElement>(`[data-reader-line="${focusedLine.value}"]`)
     if (target) target.scrollIntoView({ block: 'center' })
     else body.value?.scrollTo({ top: 0 })
   },
@@ -83,9 +92,9 @@ watch(
           <div
             v-for="(line, lineIndex) in chunk.transcript"
             :key="lineIndex"
-            :data-reader-seconds="line.seconds"
+            :data-reader-line="lineIndex"
             class="flex gap-4 rounded-lg px-2 py-1 -mx-2"
-            :class="line.seconds === focusSeconds ? 'bg-blue-50 ring-1 ring-blue-100' : ''"
+            :class="lineIndex === focusedLine ? 'bg-blue-50 ring-1 ring-blue-100' : ''"
           >
             <span class="mt-1 shrink-0 font-mono text-xs text-slate-400">{{ line.time }}</span>
             <p class="whitespace-pre-wrap text-sm leading-7 text-slate-700 break-words">

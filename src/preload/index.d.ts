@@ -1,5 +1,6 @@
 import type { AnnotationInput, ChunkAnnotation } from '../shared/annotations'
 import type { HistoryItem } from '../shared/history'
+import type { ChatRequest, ChatResult, ChatEvent, ChatMessage } from '../shared/chat'
 import type { LibraryQuery, LibraryResult } from '../shared/library'
 import type { TimelineExportPayload, TextExportFormat } from '../shared/export'
 import { ElectronAPI } from '@electron-toolkit/preload'
@@ -39,11 +40,6 @@ interface CookieImportResult {
   browser?: string
   count?: number
   error?: string
-}
-
-interface ApiChatMessage {
-  role: string
-  content: string
 }
 
 interface LocalPlaybackProgress {
@@ -93,12 +89,16 @@ declare global {
       onLocalPlaybackProgress?: (callback: (progress: LocalPlaybackProgress) => void) => () => void
       stopParse: () => Promise<void>
       onParseProgress: (callback: (line: string) => void) => () => void
-      chatWithVideo: (
-        messages: ApiChatMessage[],
-        provider: LlmProvider
-      ) => Promise<{ success: boolean; llmReceipt?: LlmCallReceipt; error?: string }>
-      onChatStreamChunk: (callback: (delta: string) => void) => () => void
-      onChatSearchQuery: (callback: (query: string) => void) => () => void
+      chatWithVideo: (request: ChatRequest) => Promise<ChatResult>
+      stopChat: (requestId: string) => Promise<void>
+      onChatEvent: (callback: (event: ChatEvent) => void) => () => void
+      getConversation: (sourceKey: string) => Promise<ChatMessage[]>
+      saveConversation: (sourceKey: string, messages: ChatMessage[]) => Promise<void>
+      exportConversation: (
+        sourceKey: string,
+        title: string,
+        messages: ChatMessage[]
+      ) => Promise<{ success: boolean; path?: string; canceled?: boolean; error?: string }>
       getAnnotations: (sourceKey: string) => Promise<ChunkAnnotation[]>
       saveAnnotation: (input: AnnotationInput) => Promise<ChunkAnnotation>
       // 历史管理

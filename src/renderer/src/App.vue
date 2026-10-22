@@ -24,6 +24,8 @@ import ExportDialog from './components/ExportDialog.vue'
 import DocumentReader from './components/DocumentReader.vue'
 import ChunkAnnotation from './components/ChunkAnnotation.vue'
 import HistoryPanel from './components/HistoryPanel.vue'
+import { useChat } from './composables/useChat'
+import { MAX_CHAT_INPUT, type ChatMessage } from '../../shared/chat'
 import { useAnnotations } from './composables/useAnnotations'
 import { formatTimecode } from '../../shared/timeline'
 import { buildVideoContext } from '../../shared/chat-context'
@@ -70,14 +72,6 @@ import {
 } from '@tabler/icons-vue'
 
 // ─── 类型定义 ─────────────────────────────────────────────
-
-interface ChatMessage {
-  role: 'user' | 'assistant'
-  content: string
-  quotedChunk?: TimelineChunk
-  streaming?: boolean
-  searchQuery?: string // LLM 触发 Tavily 搜索时记录的关键词
-}
 
 interface DanmakuData {
   platform: string
@@ -215,17 +209,43 @@ const activeTab = ref<'timeline' | 'chat'>('timeline')
 const danmakuData = ref<DanmakuData | null>(null)
 
 // 对话状态
-const chatMessages = ref<ChatMessage[]>([])
 const chatInput = ref('')
-const chatLoading = ref(false)
 const quotedChunk = ref<TimelineChunk | null>(null)
 const chatScrollRef = ref<HTMLElement | null>(null)
 const chatInputRef = ref<HTMLTextAreaElement | null>(null)
+const {
+  messages: chatMessages,
+  loading: chatLoading,
+  restoring: chatRestoring,
+  loadError: chatLoadError,
+  saveError: chatSaveError,
+  actionError: chatActionError,
+  saveStatus: chatSaveStatus,
+  load: reloadChat,
+  save: saveChat,
+  send: generateChat,
+  retry: retryChatResponse,
+  stop: stopChat,
+  clear: clearConversation
+} = useChat(activeSourceKey, window.api, () => {
+  const element = chatScrollRef.value
+  if (element && element.scrollHeight - element.scrollTop - element.clientHeight < 100) {
+    void nextTick(() => {
+      element.scrollTop = element.scrollHeight
+    })
+  }
+})
+const copiedChatId = ref('')
+const chatExporting = ref(false)
+const chatTransferMessage = ref('')
+const chatTransferError = ref('')
 
 // ─── 计算属性 ─────────────────────────────────────────────
 
 // 视频未解析完成时禁止对话
-const chatDisabled = computed(() => !timelineChunks.value.length)
+const chatDisabled = computed(
+  () => !timelineChunks.value.length || chatRestoring.value || Boolean(chatLoadError.value)
+)
 const exportTranscriptLineCount = computed(() =>
   timelineChunks.value.reduce((total, chunk) => total + chunk.transcript.length, 0)
 )
@@ -326,7 +346,10 @@ function resetAnalysisState(): void {
   expandedCardIds.value = []
   activeTab.value = 'timeline'
   lastLlmReceipt.value = null
-  clearChat()
+  quotedChunk.value = null
+  chatInput.value = ''
+  chatTransferMessage.value = ''
+  chatTransferError.value = ''
 }
 
 function revokeLocalPreview(): void {
@@ -615,10 +638,10 @@ function quoteChunk(chunk: TimelineChunk): void {
 
 // ─── 对话：清空 ───────────────────────────────────────────
 
-function clearChat(confirm = false): void {
-  if (confirm && !window.confirm('确定清空全部对话记录？')) return
-  chatMessages.value = []
+async function clearChat(): Promise<void> {
+  if (!window.confirm('清空这份资料的全部对话？此操作也会清除本机保存的记录。')) return
   quotedChunk.value = null
+  await clearConversation()
 }
 
 // ─── Markdown 渲染 ────────────────────────────────────────
@@ -633,105 +656,89 @@ function handleMarkdownClick(e: MouseEvent): void {
   if (!isNaN(seconds)) seekTo(seconds)
 }
 
-// 构建引用片段的 LLM 上下文（含标题、总结、核心观点、原文片段）
-function buildQuotedContent(chunk: TimelineChunk, userText: string): string {
-  const lines: string[] = [`[引用片段 ${chunk.startTime}-${chunk.endTime}: ${chunk.title}]`]
-  if (chunk.summary) lines.push(`总结：${chunk.summary}`)
-  if (chunk.keyPoints.length) lines.push(`核心观点：${chunk.keyPoints.join('；')}`)
-  const transcriptPreview = chunk.transcript
-    .slice(0, 5)
-    .map((t) => `[${t.time}] ${t.text}`)
-    .join('\n')
-  if (transcriptPreview) lines.push(`原文片段：\n${transcriptPreview}`)
-  lines.push('', userText)
-  return lines.join('\n')
-}
-
-// ─── 对话：发送消息 ───────────────────────────────────────
-
 async function sendChat(): Promise<void> {
   const text = chatInput.value.trim()
   if (!text || chatLoading.value || chatDisabled.value) return
-
-  chatInput.value = ''
+  const key = activeSourceKey.value
   const quoted = quotedChunk.value
-  quotedChunk.value = null
-
-  // 重置 textarea 高度
-  if (chatInputRef.value) chatInputRef.value.style.height = 'auto'
-
-  chatMessages.value.push({ role: 'user', content: text, quotedChunk: quoted ?? undefined })
-  await scrollChatToBottom()
-
-  chatLoading.value = true
-
-  // 构建发给 API 的消息列表
-  const apiMessages: { role: string; content: string }[] = [
-    { role: 'system', content: buildSystemPrompt(text, quoted?.id ?? activeChunkId.value) },
-    ...chatMessages.value.slice(0, -1).map((m) => ({
-      role: m.role,
-      content:
-        m.role === 'user' && m.quotedChunk
-          ? buildQuotedContent(m.quotedChunk, m.content)
-          : m.content
-    })),
-    {
-      role: 'user',
-      content: quoted ? buildQuotedContent(quoted, text) : text
-    }
-  ]
-
-  // 添加空助手消息，流式填充
-  chatMessages.value.push({ role: 'assistant', content: '', streaming: true })
-  const assistantIdx = chatMessages.value.length - 1
-  await scrollChatToBottom()
-
-  // 首次收到 Phase 2 chunk 时将搜索徽章注入到内容边界处
-  let searchBadgeInjected = false
-
-  // 订阅流式 chunk，接近底部时自动跟随滚动
-  const unsubscribeStream = window.api.onChatStreamChunk((delta) => {
-    const msg = chatMessages.value[assistantIdx]
-    // Phase 2 第一个 chunk 到达：将徽章标记插入 Phase1/Phase2 边界
-    if (msg.searchQuery && !searchBadgeInjected) {
-      msg.content += `<!-- SEARCH_BADGE:${msg.searchQuery} -->`
-      searchBadgeInjected = true
-    }
-    msg.content += delta
-    if (chatScrollRef.value) {
-      const el = chatScrollRef.value
-      if (el.scrollHeight - el.scrollTop - el.clientHeight < 80) {
-        el.scrollTop = el.scrollHeight
-      }
-    }
+  const sending = generateChat({
+    text,
+    quotedChunk: quoted ?? undefined,
+    provider: llmProvider.value,
+    systemPrompt: buildSystemPrompt(text, quoted?.id ?? activeChunkId.value)
   })
-
-  // 订阅搜索事件，记录关键词（保持"正在搜索..."状态，直到 Phase 2 首 chunk 到达）
-  const unsubscribeSearch = window.api.onChatSearchQuery((query) => {
-    chatMessages.value[assistantIdx].searchQuery = query
-  })
-
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if (typeof (window.api as any).chatWithVideo !== 'function') {
-      throw new Error('对话 API 不可用，请重启应用（执行 npm run dev 重新启动）')
-    }
-    const result = await window.api.chatWithVideo(apiMessages, llmProvider.value)
-    if (result.llmReceipt) lastLlmReceipt.value = result.llmReceipt
-    // 流未收到任何内容才显示错误（如 API Key 无效）
-    if (!result.success && result.error && !chatMessages.value[assistantIdx].content) {
-      chatMessages.value[assistantIdx].content = `错误：${result.error}`
-    }
-  } catch (e) {
-    if (!chatMessages.value[assistantIdx].content) {
-      chatMessages.value[assistantIdx].content = `错误：${String(e)}`
-    }
-  } finally {
-    unsubscribeStream()
-    unsubscribeSearch()
-    chatMessages.value[assistantIdx].streaming = false
-    chatLoading.value = false
+  if (chatLoading.value) {
+    chatInput.value = ''
+    quotedChunk.value = null
+    if (chatInputRef.value) chatInputRef.value.style.height = 'auto'
     await scrollChatToBottom()
+  }
+  const result = await sending
+  if (result?.llmReceipt && activeSourceKey.value === key) lastLlmReceipt.value = result.llmReceipt
+}
+
+async function retryChat(message: ChatMessage): Promise<void> {
+  const question = chatMessages.value.at(-2)
+  if (question?.role !== 'user') return
+  const key = activeSourceKey.value
+  const result = await retryChatResponse(message.id, {
+    provider: llmProvider.value,
+    systemPrompt: buildSystemPrompt(
+      question.content,
+      question.quotedChunk?.id ?? activeChunkId.value
+    )
+  })
+  if (result?.llmReceipt && activeSourceKey.value === key) lastLlmReceipt.value = result.llmReceipt
+}
+
+async function copyChat(message: ChatMessage): Promise<void> {
+  chatTransferError.value = ''
+  try {
+    await navigator.clipboard.writeText(message.content)
+    copiedChatId.value = message.id
+    setTimeout(() => {
+      if (copiedChatId.value === message.id) copiedChatId.value = ''
+    }, 2000)
+  } catch (error) {
+    chatTransferError.value = `复制失败：${String(error)}`
+  }
+}
+
+async function exportChat(): Promise<void> {
+  if (chatLoading.value || chatExporting.value) return
+  chatExporting.value = true
+  chatTransferMessage.value = ''
+  chatTransferError.value = ''
+  const key = activeSourceKey.value
+  try {
+    const snapshot = chatMessages.value.map((message) => ({
+      ...message,
+      quotedChunk: message.quotedChunk
+        ? { ...message.quotedChunk, keyPoints: [...message.quotedChunk.keyPoints] }
+        : undefined
+    }))
+    const result = await window.api.exportConversation(key, getExportTitle(), snapshot)
+    if (key !== activeSourceKey.value || result.canceled) return
+    if (!result.success) throw new Error(result.error || '导出失败')
+    chatTransferMessage.value = '对话已导出为 Markdown'
+  } catch (error) {
+    if (key === activeSourceKey.value) chatTransferError.value = String(error)
+  } finally {
+    chatExporting.value = false
+  }
+}
+
+function handleChatKeydown(event: KeyboardEvent): void {
+  if (
+    event.key === 'Enter' &&
+    !event.shiftKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.isComposing &&
+    event.keyCode !== 229
+  ) {
+    event.preventDefault()
+    void sendChat()
   }
 }
 
@@ -2069,12 +2076,25 @@ function handleGlobalPointerDown(e: PointerEvent): void {
             导出
           </button>
 
+          <button
+            v-if="activeTab === 'chat' && chatMessages.length"
+            class="ml-auto p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md disabled:opacity-40"
+            title="导出对话记录"
+            aria-label="导出对话记录"
+            :disabled="chatLoading || chatExporting || chatRestoring"
+            @click="exportChat"
+          >
+            <IconDownload class="w-4 h-4" />
+          </button>
+
           <!-- 清空对话按钮（仅对话 tab 且有消息时显示） -->
           <button
             v-if="activeTab === 'chat' && chatMessages.length"
-            class="ml-auto mr-3 p-1.5 text-slate-300 hover:text-red-400 hover:bg-red-50 rounded-md transition-colors"
+            class="mr-3 p-1.5 text-slate-300 hover:text-red-400 hover:bg-red-50 rounded-md transition-colors"
             title="清空对话"
-            @click="clearChat(true)"
+            aria-label="清空对话"
+            :disabled="chatRestoring || Boolean(chatLoadError)"
+            @click="clearChat"
           >
             <IconTrash class="w-3.5 h-3.5" />
           </button>
@@ -2084,7 +2104,7 @@ function handleGlobalPointerDown(e: PointerEvent): void {
         <div v-show="activeTab === 'timeline'" class="flex-1 flex flex-col overflow-hidden">
           <!-- 空状态 -->
           <div
-            v-if="!loading && !timelineChunks.length"
+            v-if="!loading && !timelineChunks.length && !unmatchedAnnotations.length"
             class="flex-1 flex flex-col items-center justify-center gap-2"
           >
             <IconClock class="w-10 h-10 text-slate-200" />
@@ -2447,15 +2467,53 @@ function handleGlobalPointerDown(e: PointerEvent): void {
 
         <!-- ── 对话面板 ── -->
         <div v-show="activeTab === 'chat'" class="flex-1 flex flex-col overflow-hidden">
+          <div
+            v-if="activeSourceKey"
+            class="shrink-0 border-b border-slate-100 px-4 py-2 text-xs text-slate-500"
+            aria-live="polite"
+          >
+            {{
+              chatRestoring
+                ? '正在恢复这份资料的对话…'
+                : chatSaveStatus === 'saving'
+                  ? '正在保存对话…'
+                  : chatSaveStatus === 'saved'
+                    ? '对话已保存在本机'
+                    : '对话按资料分别保存在本机'
+            }}
+          </div>
+          <div
+            v-if="chatLoadError || chatSaveError || chatActionError || chatTransferError"
+            role="alert"
+            class="shrink-0 mx-3 mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"
+          >
+            {{ chatLoadError || chatSaveError || chatActionError || chatTransferError }}
+            <button v-if="chatLoadError" class="ml-1 underline" @click="reloadChat">
+              重试恢复
+            </button>
+            <button v-else-if="chatSaveError" class="ml-1 underline" @click="saveChat">
+              重试保存
+            </button>
+          </div>
+          <p v-if="chatTransferMessage" role="status" class="mx-4 mt-2 text-xs text-emerald-700">
+            {{ chatTransferMessage }}
+          </p>
           <!-- 消息列表 -->
-          <div ref="chatScrollRef" class="flex-1 overflow-y-auto px-3 py-3 space-y-3">
+          <div
+            ref="chatScrollRef"
+            aria-label="对话记录"
+            class="flex-1 overflow-y-auto px-3 py-3 space-y-3"
+          >
             <!-- 空状态 -->
             <div
               v-if="!chatMessages.length && !chatLoading"
               class="h-full flex flex-col items-center justify-center gap-2 min-h-[200px]"
             >
               <IconMessage class="w-10 h-10 text-slate-200" />
-              <template v-if="loading">
+              <template v-if="chatRestoring">
+                <p class="text-sm text-slate-400">正在恢复对话…</p>
+              </template>
+              <template v-else-if="loading">
                 <p class="text-sm text-slate-400">视频解析中...</p>
                 <p class="text-xs text-slate-300">解析完成后即可与内容对话</p>
               </template>
@@ -2464,15 +2522,15 @@ function handleGlobalPointerDown(e: PointerEvent): void {
                 <p class="text-xs text-slate-300">解析完成后可与内容对话</p>
               </template>
               <template v-else>
-                <p class="text-sm text-slate-400">与视频内容对话</p>
+                <p class="text-sm text-slate-400">与这份资料对话</p>
                 <p class="text-xs text-slate-300">在时间轴中点击「引用」可带入片段上下文</p>
               </template>
             </div>
 
             <!-- 消息气泡 -->
             <div
-              v-for="(msg, i) in chatMessages"
-              :key="i"
+              v-for="msg in chatMessages"
+              :key="msg.id"
               class="flex gap-2"
               :class="msg.role === 'user' ? 'justify-end' : 'justify-start'"
             >
@@ -2526,9 +2584,15 @@ function handleGlobalPointerDown(e: PointerEvent): void {
                   v-else
                   class="px-3 py-2 text-sm bg-white text-slate-700 border border-slate-200 rounded-2xl rounded-tl-sm"
                 >
+                  <p
+                    v-if="msg.searchQuery && msg.content"
+                    class="mb-2 border-b border-slate-100 pb-2 text-xs text-slate-500"
+                  >
+                    检索：{{ msg.searchQuery }}
+                  </p>
                   <!-- 等待第一个 chunk 时显示三点动画（或搜索中状态） -->
                   <div
-                    v-if="msg.streaming && !msg.content"
+                    v-if="msg.status === 'streaming' && !msg.content"
                     class="flex items-center gap-1.5 py-0.5"
                   >
                     <template v-if="msg.searchQuery">
@@ -2550,13 +2614,50 @@ function handleGlobalPointerDown(e: PointerEvent): void {
                       />
                     </template>
                   </div>
-                  <!-- 有内容时渲染 Markdown（流式状态带光标；搜索徽章内嵌于内容流） -->
+                  <!-- 有内容时渲染 Markdown，流式状态带光标 -->
                   <div
                     v-else
                     class="markdown-body select-text"
                     @click="handleMarkdownClick"
-                    v-html="renderMarkdown(msg.content, msg.streaming)"
+                    v-html="renderMarkdown(msg.content, msg.status === 'streaming')"
                   />
+                </div>
+                <p
+                  v-if="msg.status === 'error'"
+                  role="status"
+                  class="mt-2 text-xs leading-5 text-red-600"
+                >
+                  {{ msg.error || '回答未完成，请重试。' }}
+                </p>
+                <p
+                  v-else-if="msg.status === 'stopped'"
+                  class="mt-2 text-xs leading-5 text-slate-500"
+                >
+                  {{ msg.error || '已停止生成，已收到的内容仍保留。' }}
+                </p>
+                <div
+                  v-if="msg.status !== 'streaming'"
+                  class="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-500"
+                >
+                  <button
+                    v-if="msg.content"
+                    class="rounded py-1 hover:text-blue-600"
+                    :aria-label="msg.role === 'user' ? '复制问题' : '复制回答'"
+                    @click="copyChat(msg)"
+                  >
+                    {{ copiedChatId === msg.id ? '已复制' : '复制' }}
+                  </button>
+                  <button
+                    v-if="
+                      msg.id === chatMessages.at(-1)?.id &&
+                      ['error', 'stopped'].includes(msg.status)
+                    "
+                    class="rounded py-1 text-blue-600 disabled:opacity-40"
+                    :disabled="chatLoading || chatDisabled"
+                    @click="retryChat(msg)"
+                  >
+                    重试这次回答
+                  </button>
                 </div>
               </div>
             </div>
@@ -2613,12 +2714,14 @@ function handleGlobalPointerDown(e: PointerEvent): void {
               <textarea
                 ref="chatInputRef"
                 v-model="chatInput"
+                aria-label="向资料提问"
+                :maxlength="MAX_CHAT_INPUT"
                 :placeholder="
                   loading
                     ? '视频解析中，请稍候...'
                     : chatDisabled
                       ? '请先解析视频'
-                      : '询问视频内容...'
+                      : '询问这份资料...'
                 "
                 :disabled="chatDisabled"
                 rows="2"
@@ -2628,10 +2731,21 @@ function handleGlobalPointerDown(e: PointerEvent): void {
                     ? 'text-slate-300 placeholder:text-slate-300 cursor-not-allowed'
                     : 'text-slate-800 placeholder:text-slate-400'
                 "
-                @keydown.enter.exact.prevent="sendChat"
+                @keydown="handleChatKeydown"
                 @input="autoResizeTextarea"
               />
               <button
+                v-if="chatLoading"
+                aria-label="停止生成"
+                title="停止生成"
+                class="shrink-0 flex h-8 w-8 items-center justify-center rounded-lg bg-slate-800 text-white hover:bg-slate-700"
+                @click="stopChat"
+              >
+                <IconSquare class="h-3.5 w-3.5" />
+              </button>
+              <button
+                v-else
+                aria-label="发送问题"
                 :disabled="!chatInput.trim() || chatLoading || chatDisabled"
                 class="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg transition-colors"
                 :class="
@@ -2644,9 +2758,7 @@ function handleGlobalPointerDown(e: PointerEvent): void {
                 <IconSend class="w-3.5 h-3.5" />
               </button>
             </div>
-            <p class="text-[10px] text-slate-300 mt-1.5 text-center">
-              Enter 发送 · Shift+Enter 换行
-            </p>
+            <p class="text-xs text-slate-400 mt-1.5 text-center">Enter 发送 · Shift+Enter 换行</p>
           </div>
         </div>
       </aside>

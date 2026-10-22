@@ -1,5 +1,6 @@
 import type { AnnotationInput, ChunkAnnotation } from '../shared/annotations'
 import type { HistoryItem } from '../shared/history'
+import type { ChatRequest, ChatResult, ChatEvent, ChatMessage } from '../shared/chat'
 import type { LibraryQuery, LibraryResult } from '../shared/library'
 import type { TimelineExportPayload, TextExportFormat } from '../shared/export'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
@@ -33,11 +34,6 @@ interface DanmakuData {
   word_freq: [string, number][]
   density_bins: [number, number, number][]
   chunk_top: Record<string, string[]>
-}
-
-interface ApiChatMessage {
-  role: string
-  content: string
 }
 
 interface CookieImportResult {
@@ -119,26 +115,24 @@ const api = {
     return () => ipcRenderer.removeListener('parse-progress', handler)
   },
 
-  // 启动流式对话（调用当前选择的模型），完成后 resolve
-  chatWithVideo: (
-    messages: ApiChatMessage[],
-    provider: LlmProvider
-  ): Promise<{ success: boolean; llmReceipt?: LlmCallReceipt; error?: string }> =>
-    ipcRenderer.invoke('chat-with-video', messages, provider),
-
-  // 订阅流式 chunk，返回取消函数
-  onChatStreamChunk: (callback: (delta: string) => void): (() => void) => {
-    const handler = (_: Electron.IpcRendererEvent, delta: string): void => callback(delta)
-    ipcRenderer.on('chat-stream-chunk', handler)
-    return () => ipcRenderer.removeListener('chat-stream-chunk', handler)
+  chatWithVideo: (request: ChatRequest): Promise<ChatResult> =>
+    ipcRenderer.invoke('chat-with-video', request),
+  stopChat: (requestId: string): Promise<void> => ipcRenderer.invoke('stop-chat', requestId),
+  onChatEvent: (callback: (event: ChatEvent) => void): (() => void) => {
+    const handler = (_: Electron.IpcRendererEvent, event: ChatEvent): void => callback(event)
+    ipcRenderer.on('chat-event', handler)
+    return () => ipcRenderer.removeListener('chat-event', handler)
   },
-
-  // 订阅搜索关键词事件（LLM 调用 Tavily 时触发），返回取消函数
-  onChatSearchQuery: (callback: (query: string) => void): (() => void) => {
-    const handler = (_: Electron.IpcRendererEvent, query: string): void => callback(query)
-    ipcRenderer.on('chat-search-query', handler)
-    return () => ipcRenderer.removeListener('chat-search-query', handler)
-  },
+  getConversation: (sourceKey: string): Promise<ChatMessage[]> =>
+    ipcRenderer.invoke('get-conversation', sourceKey),
+  saveConversation: (sourceKey: string, messages: ChatMessage[]): Promise<void> =>
+    ipcRenderer.invoke('save-conversation', sourceKey, messages),
+  exportConversation: (
+    sourceKey: string,
+    title: string,
+    messages: ChatMessage[]
+  ): Promise<{ success: boolean; path?: string; canceled?: boolean; error?: string }> =>
+    ipcRenderer.invoke('export-conversation', sourceKey, title, messages),
 
   getAnnotations: (sourceKey: string): Promise<ChunkAnnotation[]> =>
     ipcRenderer.invoke('get-annotations', sourceKey),
