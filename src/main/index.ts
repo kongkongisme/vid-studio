@@ -1226,6 +1226,7 @@ ipcMain.handle('set-cache', (_, url: string, content: string) => {
     setCachedContent(url, content)
   } catch (e) {
     console.error('[main] set-cache 失败:', e)
+    throw e
   }
 })
 

@@ -1,3 +1,4 @@
+import type { HistoryItem } from '../shared/history'
 import type { TimelineExportPayload, TextExportFormat } from '../shared/export'
 import { ElectronAPI } from '@electron-toolkit/preload'
 
@@ -41,20 +42,6 @@ interface CookieImportResult {
 interface ApiChatMessage {
   role: string
   content: string
-}
-
-interface HistoryItem {
-  id: string
-  url: string
-  title: string
-  platform: 'bilibili' | 'youtube' | 'local'
-  thumbnail?: string
-  mode: 'asr' | 'visual'
-  createdAt: number
-  favorited: boolean
-  outputPath?: string
-  duration?: number
-  filePath?: string
 }
 
 interface LocalPlaybackProgress {

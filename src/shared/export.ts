@@ -25,8 +25,11 @@ export interface TimelineExportReceipt {
 }
 
 export interface TimelineExportChunk {
+  id?: string
   startTime: string
+  startSeconds?: number
   endTime: string
+  endSeconds?: number
   title: string
   summary: string
   keyPoints: string[]
@@ -38,6 +41,7 @@ export interface TimelineExportPayload {
   title: string
   sourceLabel: string
   sourceUrl?: string
+  sourceKind?: 'subtitle' | 'notes'
   modeLabel: string
   exportedAt: string
   highlightTerm?: string

@@ -1,20 +1,7 @@
+import type { HistoryItem } from '../shared/history'
 import { app } from 'electron'
 import path from 'path'
 import fs from 'fs/promises'
-
-export interface HistoryItem {
-  id: string
-  url: string
-  title: string
-  platform: 'bilibili' | 'youtube' | 'local'
-  thumbnail?: string
-  mode: 'asr' | 'visual'
-  createdAt: number
-  favorited: boolean
-  outputPath?: string
-  duration?: number
-  filePath?: string
-}
 
 const MAX_ITEMS = 50
 

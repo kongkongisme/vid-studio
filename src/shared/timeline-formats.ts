@@ -108,6 +108,7 @@ export function buildTextExport(payload: TimelineExportPayload, format: TextExpo
           title: payload.title,
           sourceLabel: payload.sourceLabel,
           sourceUrl: payload.sourceUrl,
+          sourceKind: payload.sourceKind,
           modeLabel: payload.modeLabel,
           exportedAt: payload.exportedAt,
           chunks: payload.chunks.map((chunk) => ({
