@@ -1,12 +1,14 @@
 import { app, shell, BrowserWindow, ipcMain, session, dialog } from 'electron'
-import { getHistory, addHistory, toggleFavorite, deleteHistory } from './history'
+import { getHistory, addHistory, toggleFavorite, deleteHistory, renameHistory } from './history'
 import {
   getCachedContent,
   setCachedContent,
   deleteCachedContent,
   getCachedUrls,
-  getAnnotationStore
+  getAnnotationStore,
+  getLibraryIndex
 } from './cache'
+import type { LibraryQuery } from '../shared/library'
 import { buildTimelineExportHtml, type TimelineExportPayload } from './timeline-export'
 import { buildTextExport, EXPORT_FORMATS, safeExportFilename } from '../shared/timeline-formats'
 import type { TextExportFormat } from '../shared/export'
@@ -1174,13 +1176,11 @@ ipcMain.handle(
 
 // ─── IPC：历史管理 ────────────────────────────────────────
 
-ipcMain.handle('get-history', async () => {
-  try {
-    return await getHistory()
-  } catch {
-    return []
-  }
-})
+ipcMain.handle('get-history', () => getHistory())
+ipcMain.handle('search-library', async (_, query: LibraryQuery) =>
+  getLibraryIndex().search(await getHistory(), query)
+)
+ipcMain.handle('rename-history', (_, id: string, title: string) => renameHistory(id, title))
 
 ipcMain.handle('add-history', async (_, item) => {
   try {
@@ -1192,21 +1192,8 @@ ipcMain.handle('add-history', async (_, item) => {
   }
 })
 
-ipcMain.handle('toggle-favorite', async (_, id) => {
-  try {
-    await toggleFavorite(id)
-  } catch {
-    // 静默失败
-  }
-})
-
-ipcMain.handle('delete-history', async (_, id) => {
-  try {
-    await deleteHistory(id)
-  } catch {
-    // 静默失败
-  }
-})
+ipcMain.handle('toggle-favorite', (_, id: string) => toggleFavorite(id))
+ipcMain.handle('delete-history', (_, id: string) => deleteHistory(id))
 
 ipcMain.handle('read-file', async (_, filePath: string) => {
   try {

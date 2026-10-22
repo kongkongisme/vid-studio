@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { HistoryItem } from '../../shared/history'
+import type { LibraryMatch } from '../../shared/library'
 import type {
   TimelineExportPayload,
   TimelineExportResult,
@@ -22,6 +23,7 @@ import LocalVideoPlayer from './components/LocalVideoPlayer.vue'
 import ExportDialog from './components/ExportDialog.vue'
 import DocumentReader from './components/DocumentReader.vue'
 import ChunkAnnotation from './components/ChunkAnnotation.vue'
+import HistoryPanel from './components/HistoryPanel.vue'
 import { useAnnotations } from './composables/useAnnotations'
 import { formatTimecode } from '../../shared/timeline'
 import { buildVideoContext } from '../../shared/chat-context'
@@ -61,13 +63,10 @@ import {
   IconSparkles,
   IconClipboard,
   IconHistory,
-  IconStar,
   IconFolderOpen,
   IconDownload,
   IconShieldCheck,
-  IconFileImport,
-  IconBrandYoutube,
-  IconBrandBilibili
+  IconFileImport
 } from '@tabler/icons-vue'
 
 // ─── 类型定义 ─────────────────────────────────────────────
@@ -129,6 +128,7 @@ const videoUrl = ref('')
 const progressLog = ref<string[]>([])
 const timelineChunks = ref<TimelineChunk[]>([])
 const activeChunkId = ref('')
+const activeReaderSeconds = ref<number | null>(null)
 const expandedIds = ref<string[]>([])
 const expandedCardIds = ref<string[]>([])
 const videoLoaded = ref(false)
@@ -185,10 +185,10 @@ let clipboardToastTimer: number | null = null
 
 // ─── Phase 2: 历史管理 ────────────────────────────────────
 
-const historyList = ref<HistoryItem[]>([])
 const showHistoryPanel = ref(false)
-const historySearch = ref('')
-const cachedUrls = ref(new Set<string>())
+const openingHistory = ref(false)
+const historyOpenError = ref('')
+const activeDocumentTitle = ref('')
 const cacheLoadedMsg = ref(false)
 
 // ─── Phase 3: 时间轴搜索 ───────────────────────────────────
@@ -311,6 +311,7 @@ function getNativeFilePath(file: File): string {
 }
 
 function resetAnalysisState(): void {
+  activeDocumentTitle.value = ''
   importedDocument.value = null
   activeSourceKey.value = ''
   annotationFilter.value = 'all'
@@ -320,6 +321,7 @@ function resetAnalysisState(): void {
   timelineChunks.value = []
   danmakuData.value = null
   activeChunkId.value = ''
+  activeReaderSeconds.value = null
   expandedIds.value = []
   expandedCardIds.value = []
   activeTab.value = 'timeline'
@@ -507,6 +509,7 @@ watch(videoId, async (newVal, oldVal) => {
 async function seekTo(seconds: number): Promise<void> {
   if (!Number.isFinite(seconds) || seconds < 0) return
   if (sourceMode.value === 'document') {
+    activeReaderSeconds.value = seconds
     const target = timelineChunks.value.find(
       (chunk) => chunk.startSeconds <= seconds && chunk.endSeconds >= seconds
     )
@@ -994,8 +997,6 @@ async function importDocumentFile(file: File): Promise<void> {
       duration: document.chunks.at(-1)?.endSeconds
     })
     showImportedDocument(document, key)
-    cachedUrls.value.add(key)
-    await loadHistory()
   } catch (error) {
     errorMsg.value = String(error)
   } finally {
@@ -1011,14 +1012,6 @@ async function handleDocumentInput(event: Event): Promise<void> {
 }
 
 // ─── 历史管理 ──────────────────────────────────────────────
-
-async function loadHistory(): Promise<void> {
-  try {
-    historyList.value = await window.api.getHistory()
-  } catch {
-    // 静默失败
-  }
-}
 
 async function saveHistory(output: string): Promise<void> {
   console.log(
@@ -1046,11 +1039,10 @@ async function saveHistory(output: string): Promise<void> {
         favorited: false
       })
       await window.api.setCache(cacheKey, output)
-      cachedUrls.value.add(cacheKey)
       console.log('[saveHistory] 本地视频保存成功（含缓存）')
-      await loadHistory()
     } catch (e) {
       console.error('[saveHistory] 本地视频保存失败:', e)
+      errorMsg.value = `解析已完成，但保存失败：${String(e)}。请先导出时间轴备份。`
     }
     return
   }
@@ -1071,15 +1063,15 @@ async function saveHistory(output: string): Promise<void> {
       favorited: false
     })
     await window.api.setCache(url.value, output)
-    cachedUrls.value.add(url.value)
     console.log('[saveHistory] 保存成功（含缓存）')
-    await loadHistory()
   } catch (e) {
     console.error('[saveHistory] 保存失败:', e)
+    errorMsg.value = `解析已完成，但保存失败：${String(e)}。请先导出时间轴备份。`
   }
 }
 
 function getExportTitle(): string {
+  if (activeDocumentTitle.value) return activeDocumentTitle.value
   if (importedDocument.value) return importedDocument.value.title
   if (sourceMode.value === 'local' && selectedLocalFile.value) {
     return timelineChunks.value[0]?.title || selectedLocalFile.value.name
@@ -1215,140 +1207,89 @@ async function exportTimelineDocument(
   }
 }
 
-async function toggleFavoriteHistory(id: string): Promise<void> {
-  try {
-    await window.api.toggleFavorite(id)
-    await loadHistory()
-  } catch {
-    // 静默失败
-  }
-}
-
-async function deleteHistoryItem(id: string): Promise<void> {
-  try {
-    const item = historyList.value.find((h) => h.id === id)
-    await window.api.deleteHistory(id)
-    if (item) await window.api.deleteCache(item.url)
-    await loadHistory()
-    if (item) cachedUrls.value.delete(item.url)
-  } catch {
-    // 静默失败
-  }
-}
-
-async function toggleHistoryPanel(): Promise<void> {
-  showHistoryPanel.value = !showHistoryPanel.value
-  if (showHistoryPanel.value) {
-    await loadHistory()
-    try {
-      const urls = await window.api.getCachedUrls()
-      cachedUrls.value = new Set(urls)
-    } catch {
-      // 静默失败
-    }
-  }
-}
-
-async function loadHistoryItem(item: HistoryItem): Promise<void> {
+function openHistoryPanel(): void {
   if (loading.value || importingDocument.value || chatLoading.value) return
-  if (item.platform === 'document') {
-    try {
-      const cached = await window.api.getCache(item.url)
-      if (!cached) throw new Error('导入资料的缓存不可用，请重新导入原文件。')
-      showImportedDocument(importTimeline('cached.json', cached), item.url)
-      showHistoryPanel.value = false
-    } catch (error) {
-      errorMsg.value = String(error)
-    }
-    return
-  }
-  resetAnalysisState()
-  if (item.platform === 'local') {
-    const filePath = item.filePath ?? item.url.replace(/^local:/, '')
-    setLocalVideoFile({
-      name: getFileNameFromPath(filePath),
-      path: filePath,
-      previewUrl: pathToFileUrl(filePath),
-      isObjectUrl: false
-    })
-    void prepareLocalPlayback(filePath)
-    skipVideo.value = item.mode === 'asr'
-    showHistoryPanel.value = false
+  historyOpenError.value = ''
+  showHistoryPanel.value = true
+}
 
-    try {
-      const cached = await window.api.getCache(item.url)
-      if (cached) {
-        danmakuData.value = null
-        activeTab.value = 'timeline'
-        timelineChunks.value = parseMarkdown(cached)
-        activeSourceKey.value = item.url
-        cacheLoadedMsg.value = true
-        setTimeout(() => {
-          cacheLoadedMsg.value = false
-        }, 1500)
-        return
-      }
-    } catch {
-      // 缓存读取失败，继续重新解析
-    }
-
-    await parseVideo()
-    return
-  }
-
-  url.value = item.url
-  skipVideo.value = item.mode === 'asr'
-  showHistoryPanel.value = false
-  clearLocalVideoFile()
-
-  // 优先从 SQLite 缓存加载
+async function loadHistoryItem(item: HistoryItem, match?: LibraryMatch): Promise<void> {
+  if (loading.value || importingDocument.value || chatLoading.value || openingHistory.value) return
+  openingHistory.value = true
+  historyOpenError.value = ''
   try {
     const cached = await window.api.getCache(item.url)
-    if (cached) {
-      // 清除之前的弹幕数据，确保加载缓存时不显示旧数据
-      danmakuData.value = null
-      activeTab.value = 'timeline'
-      timelineChunks.value = parseMarkdown(cached)
+    if (item.platform === 'document') {
+      if (!cached) throw new Error('导入资料的缓存不可用，请重新导入原文件。')
+      const document = importTimeline('cached.json', cached)
+      showImportedDocument({ ...document, title: item.title }, item.url)
+    } else {
+      const chunks = cached ? parseMarkdown(cached) : []
+      if (cached && !chunks.length) throw new Error('解析缓存无法读取，请从原视频重新解析。')
+      resetAnalysisState()
+      if (item.platform === 'local') {
+        const filePath = item.filePath ?? item.url.replace(/^local:/, '')
+        setLocalVideoFile(
+          {
+            name: getFileNameFromPath(filePath),
+            path: filePath,
+            previewUrl: pathToFileUrl(filePath),
+            isObjectUrl: false
+          },
+          false
+        )
+        void prepareLocalPlayback(filePath)
+      } else {
+        clearLocalVideoFile()
+        url.value = item.url
+        currentPlatform.value = item.platform
+        videoId.value = extractVideoId(item.url, item.platform) || ''
+        videoUrl.value = getWebviewUrl(videoId.value, item.platform)
+      }
+      skipVideo.value = item.mode === 'asr'
+      timelineChunks.value = chunks
       activeSourceKey.value = item.url
-      currentPlatform.value = item.platform
-      videoId.value = extractVideoId(item.url, item.platform) || ''
-      videoUrl.value = getWebviewUrl(videoId.value, item.platform)
-      // 显示"从缓存加载"提示，1.5s 后自动消失
-      cacheLoadedMsg.value = true
-      setTimeout(() => {
-        cacheLoadedMsg.value = false
-      }, 1500)
-      return
+      if (!cached)
+        errorMsg.value = '已打开原视频，当前没有解析缓存。点击「开始解析」可重新生成时间轴。'
     }
-  } catch {
-    // 缓存读取失败，继续重新解析
+    activeDocumentTitle.value = item.title
+    const target = match
+      ? (timelineChunks.value.find((chunk) => chunk.id === match.chunkId) ??
+        timelineChunks.value.find(
+          (chunk) =>
+            chunk.startSeconds <= match.startSeconds && chunk.endSeconds >= match.startSeconds
+        ))
+      : timelineChunks.value[0]
+    if (target) {
+      activeChunkId.value = target.id
+      activeReaderSeconds.value = match?.startSeconds ?? null
+      if (match) expandedCardIds.value = [target.id]
+      if (match?.kind === 'transcript') expandedIds.value = [target.id]
+    }
+    showHistoryPanel.value = false
+    await nextTick()
+    if (match && target) {
+      document.getElementById(`timeline-${target.id}`)?.scrollIntoView({ block: 'center' })
+      if (sourceMode.value !== 'document') await seekTo(match.startSeconds)
+    }
+    if (match?.kind === 'legacy-note') {
+      await reloadAnnotations()
+      await nextTick()
+      const legacy = document.getElementById('legacy-annotations') as HTMLDetailsElement | null
+      if (legacy) {
+        legacy.open = true
+        legacy.scrollIntoView({ block: 'start' })
+      }
+    }
+    cacheLoadedMsg.value = Boolean(cached)
+    setTimeout(() => {
+      cacheLoadedMsg.value = false
+    }, 1500)
+  } catch (reason) {
+    historyOpenError.value = String(reason)
+  } finally {
+    openingHistory.value = false
   }
-
-  // 缓存未命中，重新解析（解析完成后 saveHistory 会自动写入缓存）
-  await parseVideo()
-}
-
-const filteredHistory = computed(() => {
-  if (!historySearch.value.trim()) {
-    return historyList.value
-  }
-  const query = historySearch.value.toLowerCase()
-  return historyList.value.filter(
-    (h) => h.title.toLowerCase().includes(query) || h.url.toLowerCase().includes(query)
-  )
-})
-
-function formatTime(timestamp: number): string {
-  const date = new Date(timestamp)
-  const now = new Date()
-  const diffDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24))
-
-  if (diffDays === 0) {
-    return `今天 ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`
-  }
-  if (diffDays === 1) return '昨天'
-  if (diffDays < 7) return `${diffDays} 天前`
-  return `${date.getMonth() + 1}/${date.getDate()}`
 }
 
 function clearTimelineFilters(): void {
@@ -1449,9 +1390,6 @@ onMounted(() => {
   // 启动剪贴板检测
   checkClipboard()
   clipboardCheckTimer = window.setInterval(checkClipboard, 1000)
-
-  // 加载历史记录
-  loadHistory()
 
   // 绑定拖拽事件
   window.addEventListener('dragover', handleDragOver)
@@ -1596,6 +1534,11 @@ async function handleDrop(e: DragEvent): Promise<void> {
 
 function handleGlobalKeydown(e: KeyboardEvent): void {
   if (document.querySelector('dialog[open]')) return
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault()
+    openHistoryPanel()
+    return
+  }
   // / 键聚焦搜索（不在输入框时）
   if (e.key === '/' && !['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
     e.preventDefault()
@@ -1620,6 +1563,13 @@ function handleGlobalPointerDown(e: PointerEvent): void {
 
 <template>
   <div class="h-screen flex flex-col bg-white text-slate-900 select-none overflow-hidden">
+    <HistoryPanel
+      :open="showHistoryPanel"
+      :busy="openingHistory || loading || importingDocument || chatLoading"
+      :open-error="historyOpenError"
+      @close="showHistoryPanel = false"
+      @select="loadHistoryItem"
+    />
     <ExportDialog
       :open="showExportDialog"
       :busy="exportingDocument"
@@ -1949,103 +1899,15 @@ function handleGlobalPointerDown(e: PointerEvent): void {
         </div>
       </div>
 
-      <!-- 历史记录按钮 -->
-      <div class="relative shrink-0">
-        <button
-          class="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition-colors"
-          :class="showHistoryPanel ? 'text-blue-500 bg-blue-50 border-blue-200' : ''"
-          title="解析历史"
-          @click="toggleHistoryPanel"
-        >
-          <IconHistory class="w-4 h-4" />
-        </button>
-
-        <!-- 历史下拉面板 -->
-        <div
-          v-if="showHistoryPanel"
-          class="absolute top-full right-0 mt-2 w-80 bg-white rounded-xl shadow-xl border border-slate-200 z-50 overflow-hidden flex flex-col"
-          style="max-height: 400px"
-        >
-          <!-- 搜索框 -->
-          <div class="p-2 border-b border-slate-100 shrink-0">
-            <div class="relative">
-              <IconSearch
-                class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400"
-              />
-              <input
-                v-model="historySearch"
-                placeholder="搜索历史..."
-                class="w-full pl-8 pr-3 py-1.5 bg-slate-50 rounded-lg text-sm outline-none focus:bg-slate-100"
-              />
-            </div>
-          </div>
-
-          <!-- 历史列表 -->
-          <div class="flex-1 overflow-y-auto p-1" style="min-height: 100px; max-height: 320px">
-            <!-- 有数据时显示列表 -->
-            <template v-if="filteredHistory.length > 0">
-              <div
-                v-for="item in filteredHistory"
-                :key="item.id"
-                class="flex items-center gap-2 p-2 rounded-lg hover:bg-slate-50 cursor-pointer group"
-                @click="loadHistoryItem(item)"
-              >
-                <div
-                  class="w-5 h-5 rounded bg-slate-100 text-slate-400 flex items-center justify-center shrink-0"
-                >
-                  <IconFileText v-if="item.platform === 'document'" class="w-3.5 h-3.5" />
-                  <IconVideo v-else-if="item.platform === 'local'" class="w-3.5 h-3.5" />
-                  <IconBrandYoutube v-else-if="item.platform === 'youtube'" class="w-3.5 h-3.5" />
-                  <IconBrandBilibili v-else class="w-3.5 h-3.5" />
-                </div>
-
-                <!-- 信息 -->
-                <div class="flex-1 min-w-0">
-                  <p class="text-sm text-slate-800 truncate">{{ item.title }}</p>
-                  <div class="flex items-center gap-1.5 text-xs text-slate-400">
-                    <span>{{ formatTime(item.createdAt) }}</span>
-                    <span class="text-slate-200">·</span>
-                    <span :class="item.mode === 'asr' ? 'text-blue-400' : 'text-amber-400'">
-                      {{ item.mode === 'imported' ? '导入' : item.mode === 'asr' ? 'ASR' : '视觉' }}
-                    </span>
-                  </div>
-                </div>
-
-                <!-- 缓存标识 -->
-                <IconBolt
-                  v-if="cachedUrls.has(item.url)"
-                  class="w-3.5 h-3.5 text-blue-400 shrink-0 opacity-60"
-                  title="已缓存，点击秒加载"
-                />
-
-                <!-- 操作按钮 -->
-                <button
-                  class="opacity-0 group-hover:opacity-100 p-1 transition-opacity"
-                  @click.stop="toggleFavoriteHistory(item.id)"
-                >
-                  <IconStar
-                    :class="item.favorited ? 'text-amber-400 fill-current' : 'text-slate-300'"
-                    class="w-4 h-4"
-                  />
-                </button>
-                <button
-                  class="opacity-0 group-hover:opacity-100 p-1 text-slate-300 hover:text-red-400 transition-opacity"
-                  @click.stop="deleteHistoryItem(item.id)"
-                >
-                  <IconTrash class="w-4 h-4" />
-                </button>
-              </div>
-            </template>
-
-            <!-- 空状态 -->
-            <div v-else class="p-4 text-center flex flex-col items-center justify-center h-full">
-              <IconHistory class="w-8 h-8 text-slate-200 mb-2" />
-              <p class="text-sm text-slate-400">暂无历史记录</p>
-              <p class="text-xs text-slate-300 mt-1">解析视频后将自动保存</p>
-            </div>
-          </div>
-        </div>
-      </div>
+      <button
+        class="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition-colors"
+        title="资料库（⌘/Ctrl+K）"
+        aria-label="打开资料库"
+        :disabled="loading || importingDocument || chatLoading"
+        @click="openHistoryPanel"
+      >
+        <IconHistory class="w-4 h-4" />
+      </button>
 
       <!-- 解析 / 停止 按钮 -->
       <button
@@ -2100,6 +1962,7 @@ function handleGlobalPointerDown(e: PointerEvent): void {
           v-if="sourceMode === 'document' && importedDocument"
           :document="importedDocument"
           :active-id="activeChunkId"
+          :focus-seconds="activeReaderSeconds"
           @select="activeChunkId = $event"
         />
         <webview
@@ -2364,10 +2227,13 @@ function handleGlobalPointerDown(e: PointerEvent): void {
           </div>
 
           <!-- 时间轴列表 -->
-          <div v-if="timelineChunks.length" class="flex-1 overflow-y-auto">
+          <div
+            v-if="timelineChunks.length || unmatchedAnnotations.length"
+            class="flex-1 overflow-y-auto"
+          >
             <div class="px-3 py-3 space-y-2">
               <div
-                v-if="!filteredChunks.length"
+                v-if="timelineChunks.length && !filteredChunks.length"
                 class="px-3 py-8 text-center text-sm text-slate-400"
               >
                 {{
@@ -2386,6 +2252,7 @@ function handleGlobalPointerDown(e: PointerEvent): void {
               </div>
               <details
                 v-if="unmatchedAnnotations.length"
+                id="legacy-annotations"
                 class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs"
               >
                 <summary class="cursor-pointer text-amber-800">
@@ -2411,6 +2278,7 @@ function handleGlobalPointerDown(e: PointerEvent): void {
 
               <div
                 v-for="chunk in filteredChunks"
+                :id="`timeline-${chunk.id}`"
                 :key="chunk.id"
                 class="rounded-xl border overflow-hidden bg-white transition-all"
                 :class="

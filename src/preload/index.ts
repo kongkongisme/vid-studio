@@ -1,5 +1,6 @@
 import type { AnnotationInput, ChunkAnnotation } from '../shared/annotations'
 import type { HistoryItem } from '../shared/history'
+import type { LibraryQuery, LibraryResult } from '../shared/library'
 import type { TimelineExportPayload, TextExportFormat } from '../shared/export'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
@@ -146,6 +147,10 @@ const api = {
 
   // 历史管理
   getHistory: (): Promise<HistoryItem[]> => ipcRenderer.invoke('get-history'),
+  searchLibrary: (query: LibraryQuery): Promise<LibraryResult> =>
+    ipcRenderer.invoke('search-library', query),
+  renameHistory: (id: string, title: string): Promise<void> =>
+    ipcRenderer.invoke('rename-history', id, title),
 
   addHistory: (item: Omit<HistoryItem, 'id' | 'createdAt'>): Promise<void> =>
     ipcRenderer.invoke('add-history', item),

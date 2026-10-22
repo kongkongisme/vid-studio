@@ -1,5 +1,6 @@
 import type { AnnotationInput, ChunkAnnotation } from '../shared/annotations'
 import type { HistoryItem } from '../shared/history'
+import type { LibraryQuery, LibraryResult } from '../shared/library'
 import type { TimelineExportPayload, TextExportFormat } from '../shared/export'
 import { ElectronAPI } from '@electron-toolkit/preload'
 
@@ -102,6 +103,8 @@ declare global {
       saveAnnotation: (input: AnnotationInput) => Promise<ChunkAnnotation>
       // 历史管理
       getHistory: () => Promise<HistoryItem[]>
+      searchLibrary: (query: LibraryQuery) => Promise<LibraryResult>
+      renameHistory: (id: string, title: string) => Promise<void>
       addHistory: (item: Omit<HistoryItem, 'id' | 'createdAt'>) => Promise<void>
       toggleFavorite: (id: string) => Promise<void>
       deleteHistory: (id: string) => Promise<void>

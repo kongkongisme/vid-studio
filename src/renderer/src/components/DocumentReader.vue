@@ -3,7 +3,11 @@ import { computed, ref, watch, nextTick } from 'vue'
 import { IconFileText, IconChevronLeft, IconChevronRight } from '@tabler/icons-vue'
 import type { TimelineDocument } from '../../../shared/timeline-import'
 
-const props = defineProps<{ document: TimelineDocument; activeId: string }>()
+const props = defineProps<{
+  document: TimelineDocument
+  activeId: string
+  focusSeconds: number | null
+}>()
 const emit = defineEmits<{ select: [id: string] }>()
 const body = ref<HTMLElement | null>(null)
 const index = computed(() =>
@@ -16,10 +20,19 @@ const chunk = computed(() => props.document.chunks[index.value])
 const sentenceCount = computed(() =>
   props.document.chunks.reduce((total, chunk) => total + chunk.transcript.length, 0)
 )
-watch(index, async () => {
-  await nextTick()
-  body.value?.scrollTo({ top: 0 })
-})
+watch(
+  [index, () => props.focusSeconds],
+  async () => {
+    await nextTick()
+    const target =
+      props.focusSeconds === null
+        ? null
+        : body.value?.querySelector<HTMLElement>(`[data-reader-seconds="${props.focusSeconds}"]`)
+    if (target) target.scrollIntoView({ block: 'center' })
+    else body.value?.scrollTo({ top: 0 })
+  },
+  { immediate: true }
+)
 </script>
 
 <template>
@@ -67,7 +80,13 @@ watch(index, async () => {
           <li v-for="(point, pointIndex) in chunk.keyPoints" :key="pointIndex">{{ point }}</li>
         </ul>
         <div v-if="chunk.transcript.length" class="mt-6 space-y-4 border-t border-slate-100 pt-5">
-          <div v-for="(line, lineIndex) in chunk.transcript" :key="lineIndex" class="flex gap-4">
+          <div
+            v-for="(line, lineIndex) in chunk.transcript"
+            :key="lineIndex"
+            :data-reader-seconds="line.seconds"
+            class="flex gap-4 rounded-lg px-2 py-1 -mx-2"
+            :class="line.seconds === focusSeconds ? 'bg-blue-50 ring-1 ring-blue-100' : ''"
+          >
             <span class="mt-1 shrink-0 font-mono text-xs text-slate-400">{{ line.time }}</span>
             <p class="whitespace-pre-wrap text-sm leading-7 text-slate-700 break-words">
               {{ line.text }}

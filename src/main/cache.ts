@@ -3,11 +3,13 @@ import { app } from 'electron'
 import path from 'path'
 import { mkdirSync } from 'fs'
 import { AnnotationStore } from './annotation-store'
+import { LibraryIndex } from './library-index'
 
 import { DatabaseSync } from 'node:sqlite'
 
 let db: DatabaseSync | null = null
 let annotationStore: AnnotationStore | null = null
+let libraryIndex: LibraryIndex | null = null
 
 function getDb(): DatabaseSync {
   if (!db) {
@@ -19,6 +21,7 @@ function getDb(): DatabaseSync {
       db?.close()
       db = null
       annotationStore = null
+      libraryIndex = null
     })
     db.exec(`
       CREATE TABLE IF NOT EXISTS video_cache (
@@ -39,13 +42,25 @@ export function getCachedContent(url: string): string | null {
 }
 
 export function setCachedContent(url: string, content: string): void {
-  getDb()
-    .prepare('INSERT OR REPLACE INTO video_cache (url, content, cached_at) VALUES (?, ?, ?)')
-    .run(url, content, Date.now())
+  const database = getDb()
+  const index = getLibraryIndex()
+  const cachedAt = Date.now()
+  database.exec('SAVEPOINT cache_write')
+  try {
+    database
+      .prepare('INSERT OR REPLACE INTO video_cache (url, content, cached_at) VALUES (?, ?, ?)')
+      .run(url, content, cachedAt)
+    index.update(url, content, cachedAt)
+    database.exec('RELEASE cache_write')
+  } catch (error) {
+    database.exec('ROLLBACK TO cache_write; RELEASE cache_write')
+    throw error
+  }
 }
 
 export function deleteCachedContent(url: string): void {
   getDb().prepare('DELETE FROM video_cache WHERE url = ?').run(url)
+  getLibraryIndex().remove(url)
 }
 
 export function getCachedUrls(): string[] {
@@ -56,4 +71,10 @@ export function getCachedUrls(): string[] {
 export function getAnnotationStore(): AnnotationStore {
   annotationStore ??= new AnnotationStore(getDb())
   return annotationStore
+}
+
+export function getLibraryIndex(): LibraryIndex {
+  getAnnotationStore()
+  libraryIndex ??= new LibraryIndex(getDb())
+  return libraryIndex
 }
