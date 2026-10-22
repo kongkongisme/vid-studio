@@ -218,7 +218,22 @@ npm run typecheck  # 主进程、预加载与 Vue 类型检查
 npm run lint       # ESLint
 npm run build      # 类型检查和完整生产构建
 npm run test:electron # 临时隔离数据目录中的真实 Electron 离线流程与重启验证
+npm run test:browser  # 设置、隐私偏好、键盘与响应式交互回归
 ```
+
+首次运行浏览器测试前执行 `npx playwright install chromium`；已安装 Chrome 时也可通过
+`VID_STUDIO_CHROME_CHANNEL=chrome npm run test:browser` 使用本机浏览器（测试仍使用隔离 profile）。
+
+后端测试：
+
+```bash
+python -m pip install -r vid-engine/requirements-dev.txt
+cd vid-engine
+python -m pytest -q
+```
+
+GitHub Actions 检查前端、Python 3.10 / 3.12，以及 macOS / Windows / Linux 的离线桌面流程。
+这些测试使用合成资料，不会调用真实模型、读取个人浏览器 Cookie 或修改日常应用数据。
 
 持续产品评估与参考项目记录见 [迭代记录](docs/ITERATION_LOG.md)。
 

@@ -36,7 +36,10 @@ test('real IPC preserves imported sources, notes, exports and preferences across
   async function launch(): Promise<Page> {
     application = await electron.launch({
       executablePath,
-      args: [resolve('out/main/index.js')],
+      args: [
+        ...(process.env.CI && process.platform === 'linux' ? ['--no-sandbox'] : []),
+        resolve('out/main/index.js')
+      ],
       cwd: process.cwd(),
       env
     })

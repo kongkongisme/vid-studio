@@ -6,6 +6,7 @@ out
 *.log*
 test-results/
 playwright-report/
+vid-engine/.pytest_cache/
 
 # 环境变量
 .env
