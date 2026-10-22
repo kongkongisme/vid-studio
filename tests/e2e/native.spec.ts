@@ -11,7 +11,8 @@ import { join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 
 const requireModule = createRequire(resolve('package.json'))
-const executablePath = requireModule('electron') as string
+const packagedExecutable = process.env.VID_STUDIO_PACKAGED_EXECUTABLE
+const executablePath = packagedExecutable || (requireModule('electron') as string)
 const subtitle =
   '1\n00:00:01,250 --> 00:00:04,500\n缓存帮助减少重复计算。\n\n2\n00:02:01,000 --> 00:02:05,000\n失效策略决定数据的新鲜度。\n'
 
@@ -38,7 +39,7 @@ test('real IPC preserves imported sources, notes, exports and preferences across
       executablePath,
       args: [
         ...(process.env.CI && process.platform === 'linux' ? ['--no-sandbox'] : []),
-        resolve('out/main/index.js')
+        ...(packagedExecutable ? [] : [resolve('out/main/index.js')])
       ],
       cwd: process.cwd(),
       env
@@ -51,6 +52,26 @@ test('real IPC preserves imported sources, notes, exports and preferences across
   }
   try {
     page = await launch()
+    expect(await application!.evaluate(({ app }) => app.isPackaged)).toBe(
+      Boolean(packagedExecutable)
+    )
+    if (packagedExecutable) {
+      const resources = await application!.evaluate(({ app }) => {
+        const fs = process.getBuiltinModule('fs')
+        const path = process.getBuiltinModule('path')
+        return {
+          roots: fs.readdirSync(app.getAppPath()),
+          engine: fs.readdirSync(path.join(process.resourcesPath, 'vid-engine'), {
+            recursive: true
+          })
+        }
+      })
+      const allowedRoots = ['LICENSE', 'node_modules', 'out', 'package.json', 'resources']
+      expect(resources.roots.filter((name) => !allowedRoots.includes(name))).toEqual([])
+      expect(resources.engine).toContain('main.py')
+      expect(resources.engine).toContain('.env.example')
+      expect(resources.engine.some((name) => /(^|[\\/])\.env$/.test(String(name)))).toBe(false)
+    }
     expect(await application!.evaluate(({ app }) => app.getPath('userData'))).toBe(
       env.VID_STUDIO_DATA_DIR
     )

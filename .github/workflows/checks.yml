@@ -74,6 +74,14 @@ jobs:
         if: runner.os == 'Linux'
       - run: npm run test:electron
         if: runner.os != 'Linux'
+      - name: Package the macOS application
+        if: runner.os == 'macOS'
+        run: npx electron-builder --dir --publish never --config.electronDist=node_modules/electron/dist
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Verify the packaged macOS application
+        if: runner.os == 'macOS'
+        run: npm run test:packaged
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

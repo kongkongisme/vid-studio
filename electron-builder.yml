@@ -3,22 +3,10 @@ productName: VidStudio 视析工作站
 directories:
   buildResources: build
 files:
-  - '!**/.vscode/*'
-  - '!src/*'
-  - '!electron.vite.config.{js,ts,mjs,cjs}'
-  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
-  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
-  - '!tsconfig*.json'
-  - '!vid-engine/**'
-  - '!tests/**'
-  - '!docs/**'
-  - '!examples/**'
-  - '!vitest.config.*'
-  - '!playwright.config.*'
-  - '!test-results/**'
-  - '!playwright-report/**'
-  - '!**/.env'
-  - '!**/.env.*'
+  - out/**
+  - resources/**
+  - package.json
+  - LICENSE
 extraResources:
   - from: vid-engine
     to: vid-engine

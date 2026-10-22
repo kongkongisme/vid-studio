@@ -232,6 +232,7 @@ npm run lint       # ESLint
 npm run build      # 类型检查和完整生产构建
 npm run test:electron # 临时隔离数据目录中的真实 Electron 离线流程与重启验证
 npm run test:browser  # 设置、隐私偏好、键盘与响应式交互回归
+npm run test:packaged # 验证已生成的应用目录，或在 -- 后传入可执行文件路径
 ```
 
 首次运行浏览器测试前执行 `npx playwright install chromium`；已安装 Chrome 时也可通过
@@ -246,6 +247,7 @@ python -m pytest -q
 ```
 
 GitHub Actions 检查前端、Python 3.10 / 3.12，以及 macOS / Windows / Linux 的离线桌面流程。
+macOS 还会打包未签名应用，检查发行文件范围并重复完整离线流程。
 这些测试使用合成资料，不会调用真实模型、读取个人浏览器 Cookie 或修改日常应用数据。
 
 持续产品评估与参考项目记录见 [迭代记录](docs/ITERATION_LOG.md)。
@@ -259,6 +261,10 @@ npm run build:linux  # Linux (AppImage / deb / snap)
 ```
 
 产物位于 `dist/` 目录。发行包包含 Python 引擎源码、依赖清单和 `.env.example`，不包含本机 `.env` 或 Python 解释器；使用视频解析仍需安装 Python 及其依赖，并在设置中运行环境检查。
+
+本地验证可运行 `npm run build:unpack` 后执行 `npm run test:packaged`。
+已安装 Electron 运行时时，打包命令可追加 `--config.electronDist=node_modules/electron/dist` 复用本机运行时。
+macOS 本地未签名验证可设置 `CSC_IDENTITY_AUTO_DISCOVERY=false`；正式发布仍需自行配置签名和公证。
 
 自动化测试使用 `VID_STUDIO_DATA_DIR` 和 `VID_STUDIO_ENV_FILE` 指向独立临时目录；常规使用无需设置。`VID_STUDIO_PYTHON` 可覆盖界面选择的 Python 路径。
 
