@@ -7,7 +7,8 @@ import {
   getCachedUrls,
   getAnnotationStore,
   getLibraryIndex,
-  getChatStore
+  getChatStore,
+  getReadingStore
 } from './cache'
 import type { LibraryQuery } from '../shared/library'
 import {
@@ -41,6 +42,7 @@ import { SettingsStore } from './settings-store'
 import { PythonRuntime, pythonCandidates, PYTHON_MODULES } from './python-runtime'
 import { buildDiagnosticReport, engineAvailable, probeMediaTool } from './diagnostics'
 import type { SettingsUpdate } from '../shared/settings'
+import type { ReadingPositionInput } from '../shared/reading-position'
 
 if (process.env.VID_STUDIO_DATA_DIR) {
   const dataDirectory = resolve(process.env.VID_STUDIO_DATA_DIR)
@@ -1234,6 +1236,10 @@ ipcMain.handle('get-cached-urls', () => {
 
 ipcMain.handle('get-annotations', (_, sourceKey: string) => getAnnotationStore().list(sourceKey))
 ipcMain.handle('save-annotation', (_, input) => getAnnotationStore().save(input))
+ipcMain.handle('get-reading-position', (_, key: string) => getReadingStore().load(key))
+ipcMain.handle('save-reading-position', (_, input: ReadingPositionInput) =>
+  getReadingStore().save(input)
+)
 
 // ─── 应用生命周期 ────────────────────────────────────────
 app.whenReady().then(() => {

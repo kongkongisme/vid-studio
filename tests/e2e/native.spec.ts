@@ -65,6 +65,9 @@ test('real IPC preserves imported sources, notes, exports and preferences across
       buffer: Buffer.from(subtitle)
     })
     await expect(page.getByRole('article', { name: '导入资料阅读器' })).toBeVisible()
+    const reader = (): ReturnType<Page['getByRole']> =>
+      page!.getByRole('article', { name: '导入资料阅读器' })
+    const firstTitle = await reader().getByRole('heading', { level: 2 }).textContent()
     await page.getByRole('button', { name: '写笔记', exact: true }).first().click()
     await page.getByRole('textbox', { name: '我的笔记' }).fill('用缓存失效时间平衡成本和新鲜度。')
     await expect(page.getByText('已保存到本机', { exact: true })).toBeVisible()
@@ -115,6 +118,11 @@ test('real IPC preserves imported sources, notes, exports and preferences across
       BrowserWindow.getAllWindows()[0].setSize(1440, 820)
     )
 
+    await reader().getByRole('button', { name: '下一片段' }).click()
+    await expect(reader().getByText('阅读位置已保存', { exact: true })).toBeVisible()
+    const secondTitle = await reader().getByRole('heading', { level: 2 }).textContent()
+    expect(secondTitle).not.toBe(firstTitle)
+
     await page.getByRole('button', { name: '打开设置与诊断' }).click()
     const settingsDialog = page.getByRole('dialog', { name: '设置与诊断' })
     await settingsDialog.getByRole('tab', { name: '使用偏好' }).click()
@@ -137,12 +145,31 @@ test('real IPC preserves imported sources, notes, exports and preferences across
     )
     await page.getByRole('button', { name: '打开资料库' }).click()
     const library = page.getByRole('dialog', { name: '资料库', exact: true })
+    await library.getByRole('button', { name: '离线课程', exact: true }).click()
+    await expect(reader().getByRole('heading', { level: 2 })).toHaveText(secondTitle!)
+    await expect(reader().getByText('已回到上次阅读位置')).toBeVisible()
+    await reader().getByRole('button', { name: '从头阅读' }).click()
+    await expect(reader().getByRole('heading', { level: 2 })).toHaveText(firstTitle!)
+    await expect(reader().getByText('阅读位置已保存', { exact: true })).toBeVisible()
+    await reader().getByRole('button', { name: '下一片段' }).click()
+    await expect(reader().getByText('阅读位置已保存', { exact: true })).toBeVisible()
+    await application!.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setSize(900, 600)
+    )
+    await expect(reader().getByRole('button', { name: '从头阅读' })).toBeInViewport()
+    await expect(reader().getByRole('button', { name: '上一片段' })).toBeInViewport()
+    await page.screenshot({ path: testInfo.outputPath('reading-resume-small.png') })
+    await application!.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setSize(1440, 820)
+    )
+    await page.getByRole('button', { name: '打开资料库' }).click()
     await library.getByLabel('搜索标题、章节、原文和我的笔记').fill('平衡成本')
     await expect(
       library.getByText('用缓存失效时间平衡成本和新鲜度。', { exact: false })
     ).toBeVisible()
     await library.getByRole('button', { name: '离线课程', exact: true }).click()
     await expect(library).not.toBeVisible()
+    await expect(reader().getByRole('heading', { level: 2 })).toHaveText(firstTitle!)
     await expect(page.getByRole('button', { name: '取消收藏片段' })).toBeVisible()
     await expect(
       page

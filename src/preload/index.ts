@@ -4,6 +4,7 @@ import type { SettingsSnapshot, SettingsUpdate, DiagnosticReport } from '../shar
 import type { ChatRequest, ChatResult, ChatEvent, ChatMessage } from '../shared/chat'
 import type { LibraryQuery, LibraryResult } from '../shared/library'
 import type { TimelineExportPayload, TextExportFormat } from '../shared/export'
+import type { ReadingPosition, ReadingPositionInput } from '../shared/reading-position'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
@@ -52,6 +53,10 @@ interface LocalPlaybackProgress {
 }
 
 const api = {
+  getReadingPosition: (key: string): Promise<ReadingPosition | null> =>
+    ipcRenderer.invoke('get-reading-position', key),
+  saveReadingPosition: (input: ReadingPositionInput): Promise<ReadingPosition> =>
+    ipcRenderer.invoke('save-reading-position', input),
   // 本机设置与诊断
   getSettings: (): Promise<SettingsSnapshot> => ipcRenderer.invoke('get-settings'),
   saveSettings: (update: SettingsUpdate): Promise<SettingsSnapshot> =>

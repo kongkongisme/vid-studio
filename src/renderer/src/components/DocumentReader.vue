@@ -7,8 +7,10 @@ const props = defineProps<{
   document: TimelineDocument
   activeId: string
   focusSeconds: number | null
+  positionStatus: string
+  positionError: string
 }>()
-const emit = defineEmits<{ select: [id: string] }>()
+const emit = defineEmits<{ select: [id: string]; retryPosition: [] }>()
 const body = ref<HTMLElement | null>(null)
 const index = computed(() =>
   Math.max(
@@ -104,6 +106,29 @@ watch(
         </div>
         <p v-else class="mt-6 text-sm text-slate-400">此片段没有逐句原文。</p>
       </div>
+    </div>
+    <div
+      class="flex min-h-9 shrink-0 items-center justify-between gap-3 border-t border-slate-100 px-6 text-xs"
+    >
+      <span v-if="positionError" class="text-amber-700" role="status">
+        {{ positionError }}
+        <button class="ml-2 min-h-9 underline underline-offset-2" @click="emit('retryPosition')">
+          重试
+        </button>
+      </span>
+      <span v-else class="text-slate-500" role="status">{{
+        positionStatus || '阅读位置会保存在本机'
+      }}</span>
+      <button
+        v-if="
+          chunk &&
+          (index > 0 || (focusSeconds !== null && focusSeconds > document.chunks[0].startSeconds))
+        "
+        class="min-h-9 shrink-0 text-blue-600 hover:underline focus-visible:outline-2 focus-visible:outline-blue-500"
+        @click="emit('select', document.chunks[0].id)"
+      >
+        从头阅读
+      </button>
     </div>
     <footer
       class="flex shrink-0 items-center justify-between gap-3 border-t border-slate-200 px-6 py-3 text-sm"

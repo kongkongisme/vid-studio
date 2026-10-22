@@ -4,6 +4,7 @@ import type { SettingsSnapshot, SettingsUpdate, DiagnosticReport } from '../shar
 import type { ChatRequest, ChatResult, ChatEvent, ChatMessage } from '../shared/chat'
 import type { LibraryQuery, LibraryResult } from '../shared/library'
 import type { TimelineExportPayload, TextExportFormat } from '../shared/export'
+import type { ReadingPosition, ReadingPositionInput } from '../shared/reading-position'
 import { ElectronAPI } from '@electron-toolkit/preload'
 
 type LlmProvider = 'deepseek' | 'gpt-5.6-sol'
@@ -54,6 +55,8 @@ declare global {
   interface Window {
     electron: ElectronAPI
     api: {
+      getReadingPosition: (key: string) => Promise<ReadingPosition | null>
+      saveReadingPosition: (input: ReadingPositionInput) => Promise<ReadingPosition>
       getSettings: () => Promise<SettingsSnapshot>
       saveSettings: (update: SettingsUpdate) => Promise<SettingsSnapshot>
       choosePython: () => Promise<string | null>

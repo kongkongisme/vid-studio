@@ -29,6 +29,7 @@ import { DEFAULT_PREFERENCES, type SettingsSnapshot } from '../../shared/setting
 import { useChat } from './composables/useChat'
 import { MAX_CHAT_INPUT, type ChatMessage } from '../../shared/chat'
 import { useAnnotations } from './composables/useAnnotations'
+import { useReadingPosition } from './composables/useReadingPosition'
 import { formatTimecode } from '../../shared/timeline'
 import { buildVideoContext } from '../../shared/chat-context'
 import {
@@ -137,6 +138,12 @@ const skipVideo = ref(true)
 const sourceMode = ref<InputSource>('url')
 const importedDocument = ref<TimelineDocument | null>(null)
 const activeSourceKey = ref('')
+const readingPosition = useReadingPosition(
+  activeSourceKey,
+  activeChunkId,
+  activeReaderSeconds,
+  window.api
+)
 const annotationFilter = ref<'all' | 'bookmarked' | 'notes'>('all')
 const {
   annotations,
@@ -338,6 +345,7 @@ function getNativeFilePath(file: File): string {
 }
 
 function resetAnalysisState(): void {
+  readingPosition.reset()
   activeDocumentTitle.value = ''
   importedDocument.value = null
   activeSourceKey.value = ''
@@ -543,7 +551,7 @@ async function seekTo(seconds: number): Promise<void> {
     const target = timelineChunks.value.find(
       (chunk) => chunk.startSeconds <= seconds && chunk.endSeconds >= seconds
     )
-    if (target) activeChunkId.value = target.id
+    if (target) readingPosition.select(target, seconds)
     return
   }
   if (sourceMode.value === 'local' && localPlayerRef.value) {
@@ -565,12 +573,21 @@ async function seekTo(seconds: number): Promise<void> {
 }
 
 function onChunkClick(chunk: TimelineChunk): void {
+  if (sourceMode.value === 'document') {
+    readingPosition.select(chunk)
+    return
+  }
   activeChunkId.value = chunk.id
   seekTo(chunk.startSeconds)
 }
 
 function onTranscriptLineClick(line: TranscriptLine): void {
   seekTo(line.seconds)
+}
+
+function selectReaderChunk(id: string): void {
+  const chunk = timelineChunks.value.find((candidate) => candidate.id === id)
+  if (chunk) readingPosition.select(chunk)
 }
 
 // ─── 时间轴卡片展开/折叠 ─────────────────────────────────
@@ -1019,6 +1036,7 @@ function showImportedDocument(document: TimelineDocument, key: string): void {
   url.value = document.fileName
   timelineChunks.value = document.chunks
   activeChunkId.value = document.chunks[0]?.id ?? ''
+  void readingPosition.load(key, document.chunks)
 }
 
 async function importDocumentFile(file: File): Promise<void> {
@@ -1266,6 +1284,8 @@ async function loadHistoryItem(item: HistoryItem, match?: LibraryMatch): Promise
     if (target) {
       activeChunkId.value = target.id
       activeReaderSeconds.value = match?.startSeconds ?? null
+      if (match && sourceMode.value === 'document')
+        readingPosition.select(target, match.startSeconds)
       if (match) expandedCardIds.value = [target.id]
       if (match?.kind === 'transcript') expandedIds.value = [target.id]
     }
@@ -2021,7 +2041,10 @@ function handleGlobalPointerDown(e: PointerEvent): void {
           :document="importedDocument"
           :active-id="activeChunkId"
           :focus-seconds="activeReaderSeconds"
-          @select="activeChunkId = $event"
+          :position-status="readingPosition.status.value"
+          :position-error="readingPosition.error.value"
+          @select="selectReaderChunk"
+          @retry-position="readingPosition.retry"
         />
         <webview
           v-else-if="sourceMode === 'url' && videoId"

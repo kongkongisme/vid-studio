@@ -139,7 +139,9 @@ function parts(text: string): string[] {
 }
 
 function select(entry: LibraryEntry, match?: LibraryMatch): void {
-  if (!props.busy && !loading.value && !mutating.value) emit('select', entry.item, match)
+  if (!props.busy && !loading.value && !mutating.value) {
+    emit('select', entry.item, match ?? (query.value.trim() ? entry.matches[0] : undefined))
+  }
 }
 </script>
 

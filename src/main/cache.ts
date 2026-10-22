@@ -5,6 +5,7 @@ import { mkdirSync } from 'fs'
 import { AnnotationStore } from './annotation-store'
 import { LibraryIndex } from './library-index'
 import { ChatStore } from './chat-store'
+import { ReadingStore } from './reading-store'
 
 import { DatabaseSync } from 'node:sqlite'
 
@@ -12,6 +13,7 @@ let db: DatabaseSync | null = null
 let annotationStore: AnnotationStore | null = null
 let libraryIndex: LibraryIndex | null = null
 let chatStore: ChatStore | null = null
+let readingStore: ReadingStore | null = null
 
 function getDb(): DatabaseSync {
   if (!db) {
@@ -25,6 +27,7 @@ function getDb(): DatabaseSync {
       annotationStore = null
       libraryIndex = null
       chatStore = null
+      readingStore = null
     })
     db.exec(`
       CREATE TABLE IF NOT EXISTS video_cache (
@@ -39,8 +42,7 @@ function getDb(): DatabaseSync {
 
 export function getCachedContent(url: string): string | null {
   const row = getDb().prepare('SELECT content FROM video_cache WHERE url = ?').get(url) as
-    | { content: string }
-    | undefined
+    { content: string } | undefined
   return row?.content ?? null
 }
 
@@ -85,4 +87,9 @@ export function getLibraryIndex(): LibraryIndex {
 export function getChatStore(): ChatStore {
   chatStore ??= new ChatStore(getDb())
   return chatStore
+}
+
+export function getReadingStore(): ReadingStore {
+  readingStore ??= new ReadingStore(getDb())
+  return readingStore
 }
