@@ -1,40 +1,5 @@
-export type TimelineExportLlmProvider = 'deepseek' | 'gpt-5.6-sol'
-
-export interface TimelineExportReceipt {
-  purpose: string
-  provider: TimelineExportLlmProvider
-  requestedModel: string
-  responseModel?: string
-  endpoint: string
-  requestId?: string
-  timestamp: string
-  durationMs: number
-  reasoningEffort?: string
-  status: 'success' | 'fallback'
-  error?: string
-}
-
-export interface TimelineExportChunk {
-  startTime: string
-  endTime: string
-  title: string
-  summary: string
-  keyPoints: string[]
-  tags: string[]
-  transcript: { time: string; text: string }[]
-}
-
-export interface TimelineExportPayload {
-  title: string
-  sourceLabel: string
-  modeLabel: string
-  exportedAt: string
-  highlightTerm?: string
-  includeTranscript: boolean
-  llmProvider: TimelineExportLlmProvider
-  llmReceipt?: TimelineExportReceipt
-  chunks: TimelineExportChunk[]
-}
+import type { TimelineExportPayload } from '../shared/export'
+export type { TimelineExportPayload } from '../shared/export'
 
 function escapeHtml(value: string): string {
   return value

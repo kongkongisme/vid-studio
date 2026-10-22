@@ -1,3 +1,4 @@
+import type { TimelineExportPayload, TextExportFormat } from '../shared/export'
 import { ElectronAPI } from '@electron-toolkit/preload'
 
 type LlmProvider = 'deepseek' | 'gpt-5.6-sol'
@@ -63,28 +64,6 @@ interface LocalPlaybackProgress {
   message: string
 }
 
-interface TimelineExportChunk {
-  startTime: string
-  endTime: string
-  title: string
-  summary: string
-  keyPoints: string[]
-  tags: string[]
-  transcript: { time: string; text: string }[]
-}
-
-interface TimelineExportPayload {
-  title: string
-  sourceLabel: string
-  modeLabel: string
-  exportedAt: string
-  highlightTerm?: string
-  includeTranscript: boolean
-  llmProvider: LlmProvider
-  llmReceipt?: LlmCallReceipt
-  chunks: TimelineExportChunk[]
-}
-
 declare global {
   interface Window {
     electron: ElectronAPI
@@ -142,6 +121,15 @@ declare global {
         path?: string
         title?: string
         llmReceipt?: LlmCallReceipt
+        canceled?: boolean
+        error?: string
+      }>
+      exportTimelineText: (
+        payload: TimelineExportPayload,
+        format: TextExportFormat
+      ) => Promise<{
+        success: boolean
+        path?: string
         canceled?: boolean
         error?: string
       }>

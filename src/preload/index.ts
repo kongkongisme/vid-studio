@@ -1,3 +1,4 @@
+import type { TimelineExportPayload, TextExportFormat } from '../shared/export'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
@@ -62,28 +63,6 @@ interface LocalPlaybackProgress {
   status: 'converting' | 'ready' | 'error'
   progress: number
   message: string
-}
-
-interface TimelineExportChunk {
-  startTime: string
-  endTime: string
-  title: string
-  summary: string
-  keyPoints: string[]
-  tags: string[]
-  transcript: { time: string; text: string }[]
-}
-
-interface TimelineExportPayload {
-  title: string
-  sourceLabel: string
-  modeLabel: string
-  exportedAt: string
-  highlightTerm?: string
-  includeTranscript: boolean
-  llmProvider: LlmProvider
-  llmReceipt?: LlmCallReceipt
-  chunks: TimelineExportChunk[]
 }
 
 const api = {
@@ -194,6 +173,16 @@ const api = {
     canceled?: boolean
     error?: string
   }> => ipcRenderer.invoke('export-timeline-document', payload),
+
+  exportTimelineText: (
+    payload: TimelineExportPayload,
+    format: TextExportFormat
+  ): Promise<{
+    success: boolean
+    path?: string
+    canceled?: boolean
+    error?: string
+  }> => ipcRenderer.invoke('export-timeline-text', payload, format),
 
   // 解析内容缓存
   getCache: (url: string): Promise<string | null> => ipcRenderer.invoke('get-cache', url),

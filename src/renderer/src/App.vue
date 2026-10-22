@@ -1,4 +1,9 @@
 <script setup lang="ts">
+import type {
+  TimelineExportPayload,
+  TimelineExportResult,
+  TextExportFormat
+} from '../../shared/export'
 import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue'
 import {
   type Platform,
@@ -13,10 +18,13 @@ import {
   getSeekFallbackUrl
 } from './platform'
 import LocalVideoPlayer from './components/LocalVideoPlayer.vue'
-import { marked } from 'marked'
-
-// 配置 marked：启用换行符转 <br>，禁用 mangle/headerIds（避免警告）
-marked.use({ breaks: true, gfm: true })
+import ExportDialog from './components/ExportDialog.vue'
+import {
+  parseTimelineMarkdown as parseMarkdown,
+  type TimelineChunk,
+  type TranscriptLine
+} from '../../shared/timeline'
+import { highlightText, renderMarkdown } from './lib/markdown'
 import {
   IconSearch,
   IconPlayerPlay,
@@ -47,25 +55,6 @@ import {
 } from '@tabler/icons-vue'
 
 // ─── 类型定义 ─────────────────────────────────────────────
-
-interface TranscriptLine {
-  time: string
-  seconds: number
-  text: string
-}
-
-interface TimelineChunk {
-  id: string
-  startTime: string
-  endTime: string
-  startSeconds: number
-  endSeconds: number
-  title: string
-  summary: string
-  keyPoints: string[]
-  tags: string[]
-  transcript: TranscriptLine[]
-}
 
 interface ChatMessage {
   role: 'user' | 'assistant'
@@ -104,26 +93,6 @@ interface LlmCallReceipt {
   error?: string
 }
 
-interface TimelineExportPayload {
-  title: string
-  sourceLabel: string
-  modeLabel: string
-  exportedAt: string
-  highlightTerm?: string
-  includeTranscript: boolean
-  llmProvider: LlmProvider
-  llmReceipt?: LlmCallReceipt
-  chunks: {
-    startTime: string
-    endTime: string
-    title: string
-    summary: string
-    keyPoints: string[]
-    tags: string[]
-    transcript: { time: string; text: string }[]
-  }[]
-}
-
 type InputSource = 'url' | 'local'
 type LlmProvider = 'deepseek' | 'gpt-5.6-sol'
 
@@ -157,7 +126,9 @@ const localPlaybackProgress = ref(0)
 const localPlaybackMessage = ref('')
 const localPlaybackNeedsProxy = ref(false)
 const exportingDocument = ref(false)
+const showExportDialog = ref(false)
 const documentExportMsg = ref('')
+const documentExportError = ref('')
 const llmProvider = ref<LlmProvider>('deepseek')
 const includeTranscriptInExport = ref(true)
 const lastLlmReceipt = ref<LlmCallReceipt | null>(null)
@@ -262,13 +233,6 @@ function getReceiptProviderLabel(provider: LlmProvider): string {
 
 // 弹幕词云数据：根据词频计算字体大小（12px ~ 32px）
 // ─── 工具函数 ─────────────────────────────────────────────
-
-function timeToSeconds(time: string): number {
-  const parts = time.split(':').map(Number)
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]
-  if (parts.length === 2) return parts[0] * 60 + parts[1]
-  return 0
-}
 
 const LOCAL_VIDEO_EXTENSIONS = new Set(['mp4', 'wmv', 'mov', 'mkv', 'avi', 'webm', 'flv', 'm4v'])
 const LOCAL_VIDEO_ACCEPT = [
@@ -432,95 +396,6 @@ function handleLocalPlaybackError(): void {
   const localFile = selectedLocalFile.value
   if (!localFile || localPlaybackNeedsProxy.value) return
   void prepareLocalPlayback(localFile.path, true)
-}
-
-// ─── Markdown 解析器 ──────────────────────────────────────
-
-function parseMarkdown(md: string): TimelineChunk[] {
-  const chunks: TimelineChunk[] = []
-  const lines = md.split('\n')
-  let cur: Partial<TimelineChunk> | null = null
-  let inKeyPoints = false
-  let inTranscript = false
-
-  const flush = (): void => {
-    if (cur?.startTime) chunks.push(cur as TimelineChunk)
-    cur = null
-    inKeyPoints = false
-    inTranscript = false
-  }
-
-  for (const line of lines) {
-    const hm = line.match(/^## (\d{1,2}:\d{2}(?::\d{2})?) - (\d{1,2}:\d{2}(?::\d{2})?) \| (.+)$/)
-    if (hm) {
-      flush()
-      cur = {
-        id: `${hm[1]}-${hm[2]}`,
-        startTime: hm[1],
-        endTime: hm[2],
-        startSeconds: timeToSeconds(hm[1]),
-        endSeconds: timeToSeconds(hm[2]),
-        title: hm[3].trim(),
-        summary: '',
-        keyPoints: [],
-        tags: [],
-        transcript: []
-      }
-      continue
-    }
-
-    if (!cur) continue
-
-    const sm = line.match(/^\*\*一句话总结\*\*[：:](.+)$/)
-    if (sm) {
-      cur.summary = sm[1].trim()
-      inKeyPoints = false
-      inTranscript = false
-      continue
-    }
-
-    if (line.startsWith('**核心观点**')) {
-      inKeyPoints = true
-      inTranscript = false
-      continue
-    }
-    if (inKeyPoints && line.startsWith('- ')) {
-      cur.keyPoints!.push(line.substring(2).trim())
-      continue
-    }
-
-    const tm = line.match(/^\*\*标签\*\*[：:](.+)$/)
-    if (tm) {
-      cur.tags = (tm[1].match(/#[\w\u4e00-\u9fa5]+/g) ?? []).map((t) => t.slice(1))
-      inKeyPoints = false
-      inTranscript = false
-      continue
-    }
-
-    if (line.startsWith('**原文记录**')) {
-      inTranscript = true
-      inKeyPoints = false
-      continue
-    }
-    if (inTranscript) {
-      const lm = line.match(/^\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s+(.+)$/)
-      if (lm) {
-        cur.transcript!.push({
-          time: lm[1],
-          seconds: timeToSeconds(lm[1]),
-          text: lm[2].trim()
-        })
-      }
-      continue
-    }
-
-    if (line.startsWith('**') && inKeyPoints) {
-      inKeyPoints = false
-    }
-  }
-
-  flush()
-  return chunks
 }
 
 // ─── webview：自动网页全屏 + 遮罩控制 ───────────────────
@@ -707,66 +582,6 @@ function clearChat(confirm = false): void {
 }
 
 // ─── Markdown 渲染 ────────────────────────────────────────
-
-// 时间戳格式匹配正则（用于 renderMarkdown 后处理）
-// 格式1：[MM:SS-MM:SS] 时间范围（方括号），点击跳转起始时间
-const TS_BRACKET_RANGE_REGEX =
-  /\[(\d{1,2}):(\d{2})(?::(\d{2}))?\s*[-–]\s*\d{1,2}:\d{2}(?::\d{2})?\]/g
-// 格式2：[MM:SS] 或 [HH:MM:SS] 单个时间点（方括号）
-const TS_BRACKET_REGEX = /\[(\d{1,2}):(\d{2})(?::(\d{2}))?\]/g
-// 格式3：（MM:SS-MM:SS）时间范围（全角括号），点击跳转起始时间
-const TS_WIDE_RANGE_REGEX = /（(\d{1,2}):(\d{2})(?::(\d{2}))?\s*[-–]\s*\d{1,2}:\d{2}(?::\d{2})?）/g
-// 格式4：（MM:SS）单个时间点（全角括号）
-const TS_WIDE_SINGLE_REGEX = /（(\d{1,2}):(\d{2})(?::(\d{2}))?）/g
-
-function parseSeconds(p1: string, p2: string, p3: string | undefined): number {
-  const hours = p3 !== undefined ? Number(p1) : 0
-  const minutes = p3 !== undefined ? Number(p2) : Number(p1)
-  const seconds = p3 !== undefined ? Number(p3) : Number(p2)
-  return hours * 3600 + minutes * 60 + seconds
-}
-
-// 搜索来源标记的内联 HTML（内嵌于 markdown 内容流中）
-const SEARCH_BADGE_HTML = (query: string): string =>
-  `<div style="display:flex;align-items:center;gap:6px;margin:10px 0;font-size:11px;color:#b45309;opacity:0.75">` +
-  `<div style="flex:1;height:1px;background:#fde68a"></div>` +
-  `<span style="white-space:nowrap;font-weight:500">🔍 已联网搜索：${query}</span>` +
-  `<div style="flex:1;height:1px;background:#fde68a"></div>` +
-  `</div>`
-
-function renderMarkdown(content: string, streaming = false): string {
-  if (!content) return ''
-  let html = (marked.parse(content) as string).trim()
-
-  // 将搜索标记（HTML 注释）替换为内联分隔徽章
-  html = html.replace(/<!-- SEARCH_BADGE:(.*?) -->/g, (_, query) => SEARCH_BADGE_HTML(query))
-
-  // 将时间戳替换为可点击链接（跳过 <code>/<pre> 块）
-  // 支持：[MM:SS]、[MM:SS-MM:SS]、（MM:SS）、（MM:SS-MM:SS）格式
-  const tsReplacer = (match: string, p1: string, p2: string, p3: string | undefined): string => {
-    const total = parseSeconds(p1, p2, p3)
-    return `<a class="ts-link" data-seconds="${total}" href="#">${match}</a>`
-  }
-  const parts = html.split(/(<code[\s\S]*?<\/code>|<pre[\s\S]*?<\/pre>)/)
-  html = parts
-    .map((part, i) => {
-      if (i % 2 === 1) return part // 奇数索引是 code/pre 块，原样保留
-      return part
-        .replace(TS_BRACKET_RANGE_REGEX, tsReplacer)
-        .replace(TS_BRACKET_REGEX, tsReplacer)
-        .replace(TS_WIDE_RANGE_REGEX, tsReplacer)
-        .replace(TS_WIDE_SINGLE_REGEX, tsReplacer)
-    })
-    .join('')
-
-  if (streaming) {
-    // 在最后一个 </p> 前插入光标，使其显示在段落文字末尾
-    const lastP = html.lastIndexOf('</p>')
-    const cursor = '<span class="md-cursor">▌</span>'
-    html = lastP !== -1 ? html.slice(0, lastP) + cursor + html.slice(lastP) : html + cursor
-  }
-  return html
-}
 
 // 处理 markdown 区域的点击（事件委托：时间戳跳转）
 function handleMarkdownClick(e: MouseEvent): void {
@@ -1190,17 +1005,18 @@ function toExportText(value: unknown): string {
   return typeof value === 'string' ? value : String(value ?? '')
 }
 
-function buildTimelineExportPayload(): TimelineExportPayload {
+function buildTimelineExportPayload(chunks = timelineChunks.value): TimelineExportPayload {
   return {
     title: getExportTitle(),
     sourceLabel: getExportSourceLabel(),
+    sourceUrl: sourceMode.value === 'url' ? videoUrl.value || url.value : undefined,
     modeLabel: skipVideo.value ? '解析模式：仅 ASR 解读' : '解析模式：视觉精析',
     exportedAt: `导出时间：${new Date().toLocaleString('zh-CN')}`,
     highlightTerm: searchQuery.value.trim(),
     includeTranscript: includeTranscriptInExport.value,
     llmProvider: llmProvider.value,
     llmReceipt: lastLlmReceipt.value ?? undefined,
-    chunks: timelineChunks.value.map((chunk) => ({
+    chunks: chunks.map((chunk) => ({
       startTime: toExportText(chunk.startTime),
       endTime: toExportText(chunk.endTime),
       title: toExportText(chunk.title),
@@ -1210,49 +1026,71 @@ function buildTimelineExportPayload(): TimelineExportPayload {
       transcript: includeTranscriptInExport.value
         ? chunk.transcript.map((line) => ({
             time: toExportText(line.time),
-            text: toExportText(line.text)
+            text: toExportText(line.text),
+            seconds: line.seconds,
+            endSeconds: line.endSeconds
           }))
         : []
     }))
   }
 }
 
-async function exportTimelineDocument(): Promise<void> {
+function openExportDialog(): void {
+  documentExportError.value = ''
+  showExportDialog.value = true
+}
+
+async function exportTimelineDocument(
+  format: TextExportFormat | 'pdf' = 'pdf',
+  filteredOnly = false,
+  withTranscript = includeTranscriptInExport.value
+): Promise<void> {
+  if (exportingDocument.value) return
+  documentExportError.value = ''
+  includeTranscriptInExport.value = format === 'srt' || format === 'vtt' || withTranscript
   if (!timelineChunks.value.length) {
-    errorMsg.value = '没有可导出的时间轴内容'
+    documentExportError.value = '没有可导出的时间轴内容'
     return
   }
-  if (includeTranscriptInExport.value && exportTranscriptLineCount.value === 0) {
-    errorMsg.value = '当前解析结果没有原文记录；请取消勾选“原文”，或重新解析视频后再导出'
+  if ((format === 'srt' || format === 'vtt') && exportTranscriptLineCount.value === 0) {
+    documentExportError.value = '当前解析结果没有可导出的原文记录'
     return
   }
 
   const exportDocument = window.api.exportTimelineDocument
-  if (typeof exportDocument !== 'function') {
-    errorMsg.value = '文档导出 API 尚未加载，请重启应用'
+  if (
+    (format === 'pdf' && typeof exportDocument !== 'function') ||
+    (format !== 'pdf' && typeof window.api.exportTimelineText !== 'function')
+  ) {
+    documentExportError.value = '文档导出 API 尚未加载，请重启应用'
     return
   }
 
   exportingDocument.value = true
   documentExportMsg.value = ''
   try {
+    const chunks = filteredOnly ? filteredChunks.value : timelineChunks.value
     const payload = JSON.parse(
-      JSON.stringify(buildTimelineExportPayload())
+      JSON.stringify(buildTimelineExportPayload(chunks))
     ) as TimelineExportPayload
-    const result = await exportDocument(payload)
+    const result: TimelineExportResult =
+      format === 'pdf'
+        ? await exportDocument!(payload)
+        : await window.api.exportTimelineText(payload, format)
 
     if (result.success) {
       if (result.llmReceipt) lastLlmReceipt.value = result.llmReceipt
+      showExportDialog.value = false
       const title = result.title ? `《${result.title}》` : '文档'
       documentExportMsg.value = result.path ? `${title}已导出：${result.path}` : `${title}已导出`
       setTimeout(() => {
         documentExportMsg.value = ''
       }, 2600)
     } else if (!result.canceled) {
-      errorMsg.value = result.error ?? '导出文档失败'
+      documentExportError.value = result.error ?? '导出文档失败'
     }
   } catch (e) {
-    errorMsg.value = String(e)
+    documentExportError.value = String(e)
   } finally {
     exportingDocument.value = false
   }
@@ -1420,13 +1258,6 @@ function calculateMatchScore(chunk: TimelineChunk, query: string): number {
   if (chunk.summary.toLowerCase().includes(query)) score += 3
   score += chunk.transcript.filter((t) => t.text.toLowerCase().includes(query)).length * 0.5
   return score
-}
-
-function highlightText(text: string, query: string): string {
-  if (!query.trim()) return text
-  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const regex = new RegExp(`(${escaped})`, 'gi')
-  return text.replace(regex, '<mark class="bg-yellow-200 rounded px-0.5">$1</mark>')
 }
 
 // ─── 自动导入浏览器 Cookie ────────────────────────────────
@@ -1605,6 +1436,7 @@ async function handleDrop(e: DragEvent): Promise<void> {
 // ─── 全局快捷键 ────────────────────────────────────────────
 
 function handleGlobalKeydown(e: KeyboardEvent): void {
+  if (document.querySelector('dialog[open]')) return
   // / 键聚焦搜索（不在输入框时）
   if (e.key === '/' && !['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
     e.preventDefault()
@@ -1629,6 +1461,18 @@ function handleGlobalPointerDown(e: PointerEvent): void {
 
 <template>
   <div class="h-screen flex flex-col bg-white text-slate-900 select-none overflow-hidden">
+    <ExportDialog
+      :open="showExportDialog"
+      :busy="exportingDocument"
+      :total-count="timelineChunks.length"
+      :filtered-count="filteredChunks.length"
+      :has-filter="Boolean(searchQuery.trim())"
+      :transcript-count="exportTranscriptLineCount"
+      :include-transcript="includeTranscriptInExport"
+      :error="documentExportError"
+      @close="showExportDialog = false"
+      @export="exportTimelineDocument"
+    />
     <!-- ── 顶部栏 ── -->
     <header class="shrink-0 flex items-center gap-2.5 px-4 py-2 border-b border-slate-200 bg-white">
       <!-- Logo -->
@@ -1680,7 +1524,6 @@ function handleGlobalPointerDown(e: PointerEvent): void {
       <!-- 解析模式选择器 -->
       <div class="shrink-0 flex bg-slate-100 rounded-lg p-[3px] gap-[2px]">
         <button
-          @click="skipVideo = true"
           :class="
             skipVideo
               ? 'bg-white shadow-sm text-slate-800 font-medium'
@@ -1688,12 +1531,12 @@ function handleGlobalPointerDown(e: PointerEvent): void {
           "
           class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs transition-all duration-150"
           title="仅通过字幕/语音转文字解析，速度快"
+          @click="skipVideo = true"
         >
           <IconBolt class="w-3.5 h-3.5" :class="skipVideo ? 'text-blue-500' : ''" />
           仅 ASR 解读
         </button>
         <button
-          @click="skipVideo = false"
           :class="
             !skipVideo
               ? 'bg-white shadow-sm text-slate-800 font-medium'
@@ -1701,6 +1544,7 @@ function handleGlobalPointerDown(e: PointerEvent): void {
           "
           class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs transition-all duration-150"
           title="额外使用 GLM-4V 对视频画面逐帧理解，更准确但耗时更长"
+          @click="skipVideo = false"
         >
           <IconEye class="w-3.5 h-3.5" :class="!skipVideo ? 'text-amber-500' : ''" />
           视觉精析
@@ -1923,10 +1767,10 @@ function handleGlobalPointerDown(e: PointerEvent): void {
       <!-- 历史记录按钮 -->
       <div class="relative shrink-0">
         <button
-          @click="toggleHistoryPanel"
           class="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition-colors"
           :class="showHistoryPanel ? 'text-blue-500 bg-blue-50 border-blue-200' : ''"
           title="解析历史"
+          @click="toggleHistoryPanel"
         >
           <IconHistory class="w-4 h-4" />
         </button>
@@ -1958,8 +1802,8 @@ function handleGlobalPointerDown(e: PointerEvent): void {
               <div
                 v-for="item in filteredHistory"
                 :key="item.id"
-                @click="loadHistoryItem(item)"
                 class="flex items-center gap-2 p-2 rounded-lg hover:bg-slate-50 cursor-pointer group"
+                @click="loadHistoryItem(item)"
               >
                 <!-- 平台图标 -->
                 <div
@@ -2001,8 +1845,8 @@ function handleGlobalPointerDown(e: PointerEvent): void {
 
                 <!-- 操作按钮 -->
                 <button
-                  @click.stop="toggleFavoriteHistory(item.id)"
                   class="opacity-0 group-hover:opacity-100 p-1 transition-opacity"
+                  @click.stop="toggleFavoriteHistory(item.id)"
                 >
                   <IconStar
                     :class="item.favorited ? 'text-amber-400 fill-current' : 'text-slate-300'"
@@ -2010,8 +1854,8 @@ function handleGlobalPointerDown(e: PointerEvent): void {
                   />
                 </button>
                 <button
-                  @click.stop="deleteHistoryItem(item.id)"
                   class="opacity-0 group-hover:opacity-100 p-1 text-slate-300 hover:text-red-400 transition-opacity"
+                  @click.stop="deleteHistoryItem(item.id)"
                 >
                   <IconTrash class="w-4 h-4" />
                 </button>
@@ -2031,16 +1875,16 @@ function handleGlobalPointerDown(e: PointerEvent): void {
       <!-- 解析 / 停止 按钮 -->
       <button
         v-if="!loading"
-        @click="parseVideo"
         class="shrink-0 flex items-center gap-1.5 px-4 py-1.5 bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
+        @click="parseVideo"
       >
         <IconPlayerPlay class="w-4 h-4" />
         一键解析
       </button>
       <button
         v-else
-        @click="stopParse"
         class="shrink-0 flex items-center gap-1.5 px-4 py-1.5 bg-red-500 hover:bg-red-600 active:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
+        @click="stopParse"
       >
         <IconSquare class="w-4 h-4" />
         停止解析
@@ -2048,7 +1892,6 @@ function handleGlobalPointerDown(e: PointerEvent): void {
 
       <!-- 剪贴板快速解析 -->
       <button
-        @click="pasteAndParse"
         :disabled="loading"
         class="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 transition-colors"
         :class="
@@ -2057,6 +1900,7 @@ function handleGlobalPointerDown(e: PointerEvent): void {
             : 'text-slate-400 hover:text-blue-500 hover:bg-blue-50'
         "
         title="从剪贴板粘贴链接并解析"
+        @click="pasteAndParse"
       >
         <IconClipboard class="w-4 h-4" />
       </button>
@@ -2133,13 +1977,13 @@ function handleGlobalPointerDown(e: PointerEvent): void {
         <!-- Tab 标题栏 -->
         <div class="shrink-0 flex items-center border-b border-slate-200 bg-white">
           <button
-            @click="activeTab = 'timeline'"
             class="flex items-center gap-1.5 px-4 py-2.5 text-sm border-b-2 transition-colors"
             :class="
               activeTab === 'timeline'
                 ? 'border-blue-500 text-blue-600 font-medium'
                 : 'border-transparent text-slate-400 hover:text-slate-600'
             "
+            @click="activeTab = 'timeline'"
           >
             <IconListDetails class="w-4 h-4" />
             时间轴
@@ -2151,13 +1995,13 @@ function handleGlobalPointerDown(e: PointerEvent): void {
           </button>
 
           <button
-            @click="activeTab = 'chat'"
             class="flex items-center gap-1.5 px-4 py-2.5 text-sm border-b-2 transition-colors"
             :class="
               activeTab === 'chat'
                 ? 'border-blue-500 text-blue-600 font-medium'
                 : 'border-transparent text-slate-400 hover:text-slate-600'
             "
+            @click="activeTab = 'chat'"
           >
             <IconMessage class="w-4 h-4" />
             对话
@@ -2168,33 +2012,13 @@ function handleGlobalPointerDown(e: PointerEvent): void {
             >
           </button>
 
-          <label
-            v-if="activeTab === 'timeline' && timelineChunks.length"
-            class="ml-auto flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1.5 text-[11px] text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
-            :title="
-              exportTranscriptLineCount
-                ? `包含 ${exportTranscriptLineCount} 条逐句原文记录`
-                : '当前解析结果没有可导出的原文记录'
-            "
-          >
-            <input
-              v-model="includeTranscriptInExport"
-              type="checkbox"
-              class="h-3.5 w-3.5 cursor-pointer accent-blue-500"
-            />
-            原文
-            <span v-if="exportTranscriptLineCount" class="text-[9px] text-slate-300">
-              {{ exportTranscriptLineCount }}
-            </span>
-          </label>
-
           <button
             v-if="activeTab === 'timeline' && timelineChunks.length"
-            class="mr-3 flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-slate-400 transition-colors hover:bg-blue-50 hover:text-blue-500 disabled:cursor-not-allowed disabled:text-slate-300"
+            class="ml-auto mr-3 flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-slate-400 transition-colors hover:bg-blue-50 hover:text-blue-500 disabled:cursor-not-allowed disabled:text-slate-300"
             type="button"
             :disabled="exportingDocument"
-            title="生成总结性标题并导出带水印 PDF 文档"
-            @click="exportTimelineDocument"
+            title="导出 Markdown、字幕、JSON 或 PDF"
+            @click="openExportDialog"
           >
             <IconLoader2 v-if="exportingDocument" class="w-3.5 h-3.5 animate-spin" />
             <IconDownload v-else class="w-3.5 h-3.5" />
@@ -2204,9 +2028,9 @@ function handleGlobalPointerDown(e: PointerEvent): void {
           <!-- 清空对话按钮（仅对话 tab 且有消息时显示） -->
           <button
             v-if="activeTab === 'chat' && chatMessages.length"
-            @click="clearChat(true)"
             class="ml-auto mr-3 p-1.5 text-slate-300 hover:text-red-400 hover:bg-red-50 rounded-md transition-colors"
             title="清空对话"
+            @click="clearChat(true)"
           >
             <IconTrash class="w-3.5 h-3.5" />
           </button>
@@ -2317,8 +2141,8 @@ function handleGlobalPointerDown(e: PointerEvent): void {
               />
               <button
                 v-if="searchQuery"
-                @click="searchQuery = ''"
                 class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                @click="searchQuery = ''"
               >
                 <IconX class="w-3.5 h-3.5" />
               </button>
@@ -2593,8 +2417,8 @@ function handleGlobalPointerDown(e: PointerEvent): void {
                   <div
                     v-else
                     class="markdown-body select-text"
-                    v-html="renderMarkdown(msg.content, msg.streaming)"
                     @click="handleMarkdownClick"
+                    v-html="renderMarkdown(msg.content, msg.streaming)"
                   />
                 </div>
               </div>
@@ -2631,8 +2455,8 @@ function handleGlobalPointerDown(e: PointerEvent): void {
                 </ul>
               </div>
               <button
-                @click="quotedChunk = null"
                 class="shrink-0 text-blue-300 hover:text-blue-500 transition-colors"
+                @click="quotedChunk = null"
               >
                 <IconX class="w-3.5 h-3.5" />
               </button>
@@ -2671,7 +2495,6 @@ function handleGlobalPointerDown(e: PointerEvent): void {
                 @input="autoResizeTextarea"
               />
               <button
-                @click="sendChat"
                 :disabled="!chatInput.trim() || chatLoading || chatDisabled"
                 class="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg transition-colors"
                 :class="
@@ -2679,6 +2502,7 @@ function handleGlobalPointerDown(e: PointerEvent): void {
                     ? 'bg-blue-500 hover:bg-blue-600 text-white'
                     : 'bg-slate-200 text-slate-400 cursor-not-allowed'
                 "
+                @click="sendChat"
               >
                 <IconSend class="w-3.5 h-3.5" />
               </button>
@@ -2710,14 +2534,14 @@ function handleGlobalPointerDown(e: PointerEvent): void {
           }}</span>
         </div>
         <button
-          @click="acceptClipboardUrl"
           class="ml-2 px-3 py-1.5 bg-blue-500 hover:bg-blue-600 rounded text-xs font-medium transition-colors"
+          @click="acceptClipboardUrl"
         >
           立即解析
         </button>
         <button
-          @click="showClipboardToast = false"
           class="p-1 text-slate-400 hover:text-white transition-colors"
+          @click="showClipboardToast = false"
         >
           <IconX class="w-4 h-4" />
         </button>

@@ -2,6 +2,8 @@ import { app, shell, BrowserWindow, ipcMain, session, dialog } from 'electron'
 import { getHistory, addHistory, toggleFavorite, deleteHistory } from './history'
 import { getCachedContent, setCachedContent, deleteCachedContent, getCachedUrls } from './cache'
 import { buildTimelineExportHtml, type TimelineExportPayload } from './timeline-export'
+import { buildTextExport, EXPORT_FORMATS, safeExportFilename } from '../shared/timeline-formats'
+import type { TextExportFormat } from '../shared/export'
 import { extname, join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { spawn, spawnSync, execSync, type ChildProcess } from 'child_process'
@@ -279,8 +281,13 @@ function createWindow(): void {
   mainWindow.on('ready-to-show', () => mainWindow.show())
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    if (/^https?:\/\//i.test(details.url)) void shell.openExternal(details.url)
     return { action: 'deny' }
+  })
+
+  mainWindow.webContents.on('will-navigate', (event, targetUrl) => {
+    event.preventDefault()
+    if (/^https?:\/\//i.test(targetUrl)) void shell.openExternal(targetUrl)
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
@@ -820,6 +827,29 @@ ipcMain.handle(
         message: String(e)
       })
       return { success: false, error: String(e) }
+    }
+  }
+)
+
+ipcMain.handle(
+  'export-timeline-text',
+  async (_, payload: TimelineExportPayload, format: TextExportFormat) => {
+    try {
+      if (!Object.hasOwn(EXPORT_FORMATS, format) || !payload?.chunks?.length) {
+        return { success: false, error: '请选择有效格式和需要导出的片段' }
+      }
+      const content = buildTextExport(payload, format)
+      const info = EXPORT_FORMATS[format]
+      const { canceled, filePath } = await dialog.showSaveDialog({
+        title: `导出${info.label}`,
+        defaultPath: `${safeExportFilename(payload.title)}.${info.extension}`,
+        filters: [{ name: info.label, extensions: [info.extension] }]
+      })
+      if (canceled || !filePath) return { success: false, canceled: true }
+      await writeFile(filePath, content, 'utf-8')
+      return { success: true, path: filePath }
+    } catch (error) {
+      return { success: false, error: String(error) }
     }
   }
 )
