@@ -181,7 +181,9 @@ defineExpose({ seekTo })
       @error="handleVideoError"
     />
 
-    <div class="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/70 to-transparent px-4 py-3">
+    <div
+      class="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/70 to-transparent px-4 py-3"
+    >
       <p class="max-w-[70%] truncate text-sm font-medium text-white/90">{{ title }}</p>
     </div>
 

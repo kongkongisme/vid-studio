@@ -178,7 +178,7 @@ GitHub Actions 配置前端、Python 双版本和三系统桌面检查。
 **验证**：本地 Python 3.11 干净虚拟环境的 17 项测试通过；3 项浏览器回归通过；
 真实 macOS Electron 流程已通过。首轮远端 Python 3.10 / 3.12 均通过；前端和桌面任务在
 `npm ci` 阶段暴露了旧锁文件缺失 Windows 签名可选依赖的问题。已补齐构建依赖，
-使用 Node 24.19 / npm 12.2 验证干净安装计划通过，修复已推送，继续跟进远端检查。
+使用 Node 24.19 / npm 12.2 验证干净安装计划通过，后续三系统与全部远端检查通过（见迭代 9）。
 磁盘不足时清理本轮可重建应用包，并复用已安装 Chrome，未清理用户数据。
 
 ## 迭代 8：离线 PDF 与可控导出
@@ -212,3 +212,23 @@ GitHub Actions 配置前端、Python 双版本和三系统桌面检查。
 4 项浏览器交互回归均通过，停止期间禁用操作与迟到解析结果已覆盖。ESLint 无错误。
 
 **取舍**：保留一个活动解析任务，不引入后台队列；先保证用户可以可靠终止正在进行的工作。
+
+**跨平台结果**：[GitHub Actions 39816170727](https://github.com/kongkongisme/vid-studio/actions/runs/39816170727)
+的前端、Python 3.10 / 3.12、Windows / macOS / Linux 桌面任务全部通过，修复了迭代 7 首次安装失败。
+
+## 迭代 10：依赖减法与受支持运行时
+
+**重新评估**：项目带有 7 个未被代码引用的 UI / 自动更新依赖和两套不同步的锁文件。
+Electron 39 及旧构建依赖也出现新的安全公告。保留现有交互，降低安装成本并更新受支持运行时。
+
+**完成**：升级 Electron 44.9.3、Vue 3.5.44、Vite 7.3.7、electron-builder 26.15.3，
+在已有 semver 范围内更新其余依赖。移除未使用的依赖、空工具函数、占位更新服务和过期 pnpm 锁文件。
+修正仓库元信息；统一 npm 锁文件。启动 / 测试自动执行新版 Electron 的按需安装，提供独立准备命令。
+
+**兼容性**：依据 [Electron 44 迁移说明](https://github.com/electron/electron/blob/v44.9.3/docs/breaking-changes.md)，
+最低 macOS 版本提高至 13；Windows / Linux 使用 64 位平台，README 已说明。
+
+**验证**：既有 94 项回归通过，类型检查、完整构建通过，npm 12 干净安装计划通过。
+依赖审计由 37 项（28 high）降至 8 项 moderate，没有 high / critical；生产依赖审计为 0。
+剩余项来自构建工具的 `global-agent → roarr → sprintf-js`，未使用强制升级绕过兼容性。
+新版 Electron 44 的真实 macOS 离线导出、设置、重启流程通过，4 项浏览器回归通过。

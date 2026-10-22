@@ -2,8 +2,8 @@
 
 > 把视频和字幕整理成可检索、可批注、可导出的知识时间轴，支持基于原文的 AI 问答。
 
-![Platform](https://img.shields.io/badge/tested-macOS-blue) ![Platform](https://img.shields.io/badge/untested-Windows%20%7C%20Linux-lightgrey)
-![Electron](https://img.shields.io/badge/Electron-39-47848F?logo=electron)
+![Checks](https://github.com/kongkongisme/vid-studio/actions/workflows/checks.yml/badge.svg)
+![Electron](https://img.shields.io/badge/Electron-44-47848F?logo=electron)
 ![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs)
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -128,13 +128,13 @@ VidStudio 视析工作站是一款基于 Electron 的桌面应用，内置 B 站
 
 ---
 
-> **平台说明**：目前仅在 macOS 上完整测试，Windows 与 Linux 理论上可运行但未经验证，如遇问题欢迎提 Issue。
+> **平台说明**：macOS 13+；Windows / Linux 使用 64 位系统。CI 已覆盖三系统的离线导入、笔记、PDF、设置、重启及后台进程停止；真实视频服务和安装包尚未在 Windows / Linux 人工验收。
 
 ## 环境要求
 
 | 运行时  | 最低版本 | 推荐版本        |
 | ------- | -------- | --------------- |
-| Node.js | 22.13    | 22 LTS / 24 LTS |
+| Node.js | 22.13    | 24 LTS          |
 | npm     | 10.0     | 随 Node.js 附带 |
 | Python  | 3.10     | 3.11 / 3.12     |
 
@@ -211,6 +211,9 @@ ZHIPUAI_API_KEY=xxxxxxxxxxxxxxxx
 ```bash
 npm run dev
 ```
+
+首次启动会下载匹配平台的 Electron 44 运行时；也可先执行 `npm run setup:electron`。
+项目统一使用 npm 与 `package-lock.json`，干净安装或 CI 请运行 `npm ci`。
 
 ---
 
