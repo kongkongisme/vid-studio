@@ -3,8 +3,6 @@ import { app } from 'electron'
 import path from 'path'
 import fs from 'fs/promises'
 
-const MAX_ITEMS = 50
-
 // 延迟获取文件路径，确保 app 已 ready
 function getHistoryFile(): string {
   return path.join(app.getPath('userData'), 'history.json')
@@ -37,11 +35,6 @@ export async function addHistory(item: Omit<HistoryItem, 'id' | 'createdAt'>): P
   // 去重：相同 URL 替换旧的
   const filtered = history.filter((h) => h.url !== item.url)
   filtered.unshift(newItem)
-
-  // 限制数量
-  if (filtered.length > MAX_ITEMS) {
-    filtered.pop()
-  }
 
   const filePath = getHistoryFile()
   // 确保目录存在（app.getPath('userData') 返回路径但不保证目录已创建）

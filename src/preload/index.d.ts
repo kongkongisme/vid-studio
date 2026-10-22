@@ -1,3 +1,4 @@
+import type { AnnotationInput, ChunkAnnotation } from '../shared/annotations'
 import type { HistoryItem } from '../shared/history'
 import type { TimelineExportPayload, TextExportFormat } from '../shared/export'
 import { ElectronAPI } from '@electron-toolkit/preload'
@@ -97,6 +98,8 @@ declare global {
       ) => Promise<{ success: boolean; llmReceipt?: LlmCallReceipt; error?: string }>
       onChatStreamChunk: (callback: (delta: string) => void) => () => void
       onChatSearchQuery: (callback: (query: string) => void) => () => void
+      getAnnotations: (sourceKey: string) => Promise<ChunkAnnotation[]>
+      saveAnnotation: (input: AnnotationInput) => Promise<ChunkAnnotation>
       // 历史管理
       getHistory: () => Promise<HistoryItem[]>
       addHistory: (item: Omit<HistoryItem, 'id' | 'createdAt'>) => Promise<void>

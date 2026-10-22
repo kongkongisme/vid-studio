@@ -11,16 +11,23 @@ const props = defineProps<{
   hasFilter: boolean
   transcriptCount: number
   includeTranscript: boolean
+  includeAnnotations: boolean
   error: string
 }>()
 const emit = defineEmits<{
   close: []
-  export: [format: TextExportFormat | 'pdf', filteredOnly: boolean, includeTranscript: boolean]
+  export: [
+    format: TextExportFormat | 'pdf',
+    filteredOnly: boolean,
+    includeTranscript: boolean,
+    includeAnnotations: boolean
+  ]
 }>()
 const dialog = ref<HTMLDialogElement | null>(null)
 const format = ref<TextExportFormat | 'pdf'>('markdown')
 const filteredOnly = ref(false)
 const withTranscript = ref(true)
+const withAnnotations = ref(true)
 const isSubtitle = computed(() => format.value === 'srt' || format.value === 'vtt')
 const selectionCount = computed(() => (filteredOnly.value ? props.filteredCount : props.totalCount))
 
@@ -31,6 +38,7 @@ watch(
     if (open) {
       filteredOnly.value = false
       withTranscript.value = props.includeTranscript
+      withAnnotations.value = props.includeAnnotations
       dialog.value?.showModal()
     } else dialog.value?.close()
   }
@@ -50,7 +58,10 @@ function close(): void {
     @cancel="busy && $event.preventDefault()"
     @click="$event.target === dialog && close()"
   >
-    <form class="p-6" @submit.prevent="emit('export', format, filteredOnly, withTranscript)">
+    <form
+      class="p-6"
+      @submit.prevent="emit('export', format, filteredOnly, withTranscript, withAnnotations)"
+    >
       <div class="flex items-center justify-between gap-4">
         <h2 id="export-dialog-title" class="text-lg font-semibold">导出时间轴</h2>
         <button
@@ -96,7 +107,14 @@ function close(): void {
           <input v-model="withTranscript" type="checkbox" class="accent-blue-500" />
           包含逐句原文
         </label>
-        <p v-else class="rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+        <label v-if="!isSubtitle" class="flex items-center gap-2">
+          <input v-model="withAnnotations" type="checkbox" class="accent-blue-500" />
+          包含我的笔记与片段收藏
+        </label>
+        <p
+          v-if="isSubtitle"
+          class="rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800"
+        >
           字幕使用逐句原文。解析结果只有起始时间时，结束时间按下一句、片段边界及最长 8 秒推断。
         </p>
       </fieldset>

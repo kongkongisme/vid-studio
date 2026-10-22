@@ -1,6 +1,12 @@
 import { app, shell, BrowserWindow, ipcMain, session, dialog } from 'electron'
 import { getHistory, addHistory, toggleFavorite, deleteHistory } from './history'
-import { getCachedContent, setCachedContent, deleteCachedContent, getCachedUrls } from './cache'
+import {
+  getCachedContent,
+  setCachedContent,
+  deleteCachedContent,
+  getCachedUrls,
+  getAnnotationStore
+} from './cache'
 import { buildTimelineExportHtml, type TimelineExportPayload } from './timeline-export'
 import { buildTextExport, EXPORT_FORMATS, safeExportFilename } from '../shared/timeline-formats'
 import type { TextExportFormat } from '../shared/export'
@@ -1246,6 +1252,9 @@ ipcMain.handle('get-cached-urls', () => {
     return []
   }
 })
+
+ipcMain.handle('get-annotations', (_, sourceKey: string) => getAnnotationStore().list(sourceKey))
+ipcMain.handle('save-annotation', (_, input) => getAnnotationStore().save(input))
 
 // ─── 应用生命周期 ────────────────────────────────────────
 app.whenReady().then(() => {

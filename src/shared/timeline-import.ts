@@ -179,6 +179,11 @@ function parseJson(content: string): Omit<TimelineDocument, 'fileName'> & { file
       if (typeof line.text !== 'string') throw new Error('原文内容必须是文字。')
       return { time: formatTimecode(seconds), seconds, endSeconds, text: line.text }
     })
+    if (
+      chunk.userNote !== undefined &&
+      (typeof chunk.userNote !== 'string' || chunk.userNote.length > 20000)
+    )
+      throw new Error('个人笔记必须是 20,000 字以内的文字。')
     const baseId = text(chunk.id) || `imported-${index + 1}-${start}`
     let id = baseId
     while (ids.has(id)) id += `-${index + 1}`
@@ -190,6 +195,8 @@ function parseJson(content: string): Omit<TimelineDocument, 'fileName'> & { file
       startSeconds: start,
       endSeconds: end,
       title: text(chunk.title, `片段 ${index + 1}`),
+      userNote: typeof chunk.userNote === 'string' ? chunk.userNote : undefined,
+      bookmarked: chunk.bookmarked === true,
       summary: text(chunk.summary),
       keyPoints: stringList(chunk.keyPoints),
       tags: stringList(chunk.tags),

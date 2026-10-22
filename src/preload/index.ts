@@ -1,3 +1,4 @@
+import type { AnnotationInput, ChunkAnnotation } from '../shared/annotations'
 import type { HistoryItem } from '../shared/history'
 import type { TimelineExportPayload, TextExportFormat } from '../shared/export'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
@@ -137,6 +138,11 @@ const api = {
     ipcRenderer.on('chat-search-query', handler)
     return () => ipcRenderer.removeListener('chat-search-query', handler)
   },
+
+  getAnnotations: (sourceKey: string): Promise<ChunkAnnotation[]> =>
+    ipcRenderer.invoke('get-annotations', sourceKey),
+  saveAnnotation: (input: AnnotationInput): Promise<ChunkAnnotation> =>
+    ipcRenderer.invoke('save-annotation', input),
 
   // 历史管理
   getHistory: (): Promise<HistoryItem[]> => ipcRenderer.invoke('get-history'),

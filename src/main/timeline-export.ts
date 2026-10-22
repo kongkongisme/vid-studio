@@ -15,10 +15,12 @@ function escapeRegExp(value: string): string {
 }
 
 function renderHighlightedText(value: string, highlightTerm = ''): string {
-  const escaped = escapeHtml(value)
   const term = highlightTerm.trim()
-  if (!term) return escaped
-  return escaped.replace(new RegExp(`(${escapeRegExp(escapeHtml(term))})`, 'gi'), '<mark>$1</mark>')
+  if (!term) return escapeHtml(value)
+  return value
+    .split(new RegExp(`(${escapeRegExp(term)})`, 'gi'))
+    .map((part, index) => (index % 2 ? `<mark>${escapeHtml(part)}</mark>` : escapeHtml(part)))
+    .join('')
 }
 
 export function buildTimelineExportHtml(payload: TimelineExportPayload): string {
@@ -72,15 +74,25 @@ export function buildTimelineExportHtml(payload: TimelineExportPayload): string 
             .join('')
         : ''
 
+      const personalNote =
+        payload.includeAnnotations !== false && chunk.userNote
+          ? `<div class="personal-note"><b>我的笔记</b><p>${renderHighlightedText(chunk.userNote, highlightTerm).replace(/\n/g, '<br>')}</p></div>`
+          : ''
+      const bookmark =
+        payload.includeAnnotations !== false && chunk.bookmarked
+          ? '<span class="bookmark">已收藏</span>'
+          : ''
+
       return `
         <section class="chunk${transcript ? ' with-transcript' : ''}" aria-labelledby="section-${index + 1}">
           <div class="chunk-index">${String(index + 1).padStart(2, '0')}</div>
           <div class="chunk-body">
-            <div class="time">${escapeHtml(chunk.startTime)} - ${escapeHtml(chunk.endTime)}</div>
+            <div class="time">${escapeHtml(chunk.startTime)} - ${escapeHtml(chunk.endTime)} ${bookmark}</div>
             <h2 id="section-${index + 1}">${renderHighlightedText(chunk.title, highlightTerm)}</h2>
             ${chunk.summary ? `<p class="summary">${renderHighlightedText(chunk.summary, highlightTerm)}</p>` : ''}
             ${keyPoints ? `<ul>${keyPoints}</ul>` : ''}
             ${tags ? `<div class="tags">${tags}</div>` : ''}
+            ${personalNote}
             ${transcript ? `<div class="transcript"><div class="transcript-title">原文记录</div>${transcript}</div>` : ''}
           </div>
         </section>`
@@ -217,6 +229,10 @@ export function buildTimelineExportHtml(payload: TimelineExportPayload): string 
       padding: 3px 7px;
       font-size: 11px;
     }
+    .bookmark { margin-left: 8px; color: #a16207; font-size: 10px; }
+    .personal-note { margin: 12px 0; padding: 10px 12px; background: #fffbeb; border-left: 3px solid #fbbf24; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+    .personal-note b { color: #a16207; }
+    .personal-note p { margin: 5px 0 0; }
     .chunk.with-transcript { break-inside: auto; }
     .transcript {
       margin-top: 12px;

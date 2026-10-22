@@ -17,6 +17,8 @@ export interface TimelineChunk {
   keyPoints: string[]
   tags: string[]
   transcript: TranscriptLine[]
+  userNote?: string
+  bookmarked?: boolean
 }
 
 export function timeToSeconds(time: string): number {
@@ -53,7 +55,8 @@ export function parseTimelineMarkdown(markdown: string): TimelineChunk[] {
   const chunks: TimelineChunk[] = []
   const ids = new Map<string, number>()
   let current: TimelineChunk | null = null
-  let section: 'none' | 'points' | 'transcript' = 'none'
+  let section: 'none' | 'points' | 'transcript' | 'note' = 'none'
+  let noteHasLine = false
 
   for (const rawLine of markdown.replace(/^\uFEFF/, '').split(/\r?\n/)) {
     const line = rawLine.trim()
@@ -97,11 +100,21 @@ export function parseTimelineMarkdown(markdown: string): TimelineChunk[] {
       section = 'points'
     } else if (line.startsWith('**原文记录**')) {
       section = 'transcript'
+    } else if (line.startsWith('**我的笔记**')) {
+      section = 'note'
+      current.userNote = ''
+      noteHasLine = false
+    } else if (line.startsWith('**片段收藏**')) {
+      current.bookmarked = /[：:]\s*是$/.test(line)
+      section = 'none'
     } else if (line.startsWith('**标签**')) {
       current.tags = (line.match(/#[\p{L}\p{N}_-]+/gu) ?? []).map((tag) => tag.slice(1))
       section = 'none'
     } else if (line.startsWith('**')) {
       section = 'none'
+    } else if (section === 'note' && (line === '>' || line.startsWith('> '))) {
+      current.userNote += (noteHasLine ? '\n' : '') + decode(line.slice(2))
+      noteHasLine = true
     } else if (section === 'points' && /^[-*]\s/.test(line)) {
       current.keyPoints.push(decode(line.slice(2).trim()))
     } else if (section === 'transcript') {

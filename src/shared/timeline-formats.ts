@@ -36,6 +36,14 @@ export function buildTimelineMarkdown(payload: TimelineExportPayload): string {
         `**标签**：${chunk.tags.map((tag) => `#${tag.replace(/[^\p{L}\p{N}_-]/gu, '_')}`).join(' ')}`,
         ''
       )
+    if (payload.includeAnnotations !== false && chunk.bookmarked) lines.push('**片段收藏**：是', '')
+    if (payload.includeAnnotations !== false && chunk.userNote) {
+      lines.push(
+        '**我的笔记**',
+        ...chunk.userNote.split(/\r?\n/).map((line) => `> ${markdownText(line)}`),
+        ''
+      )
+    }
     if (payload.includeTranscript && chunk.transcript.length) {
       lines.push(
         '**原文记录**',
@@ -113,6 +121,8 @@ export function buildTextExport(payload: TimelineExportPayload, format: TextExpo
           exportedAt: payload.exportedAt,
           chunks: payload.chunks.map((chunk) => ({
             ...chunk,
+            userNote: payload.includeAnnotations !== false ? chunk.userNote : undefined,
+            bookmarked: payload.includeAnnotations !== false ? chunk.bookmarked : undefined,
             transcript: payload.includeTranscript ? chunk.transcript : []
           }))
         },

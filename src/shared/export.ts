@@ -26,6 +26,8 @@ export interface TimelineExportReceipt {
 
 export interface TimelineExportChunk {
   id?: string
+  userNote?: string
+  bookmarked?: boolean
   startTime: string
   startSeconds?: number
   endTime: string
@@ -46,6 +48,7 @@ export interface TimelineExportPayload {
   exportedAt: string
   highlightTerm?: string
   includeTranscript: boolean
+  includeAnnotations?: boolean
   llmProvider: TimelineExportLlmProvider
   llmReceipt?: TimelineExportReceipt
   chunks: TimelineExportChunk[]

@@ -1,23 +1,24 @@
 // src/main/cache.ts
 import { app } from 'electron'
 import path from 'path'
+import { mkdirSync } from 'fs'
+import { AnnotationStore } from './annotation-store'
 
-// node:sqlite 是 Node 22 内置模块，Electron 39 (Node 22.14) 支持
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore — node:sqlite 类型声明在部分 @types/node 版本中缺失
 import { DatabaseSync } from 'node:sqlite'
 
-let db: InstanceType<typeof DatabaseSync> | null = null
+let db: DatabaseSync | null = null
+let annotationStore: AnnotationStore | null = null
 
-function getDb(): InstanceType<typeof DatabaseSync> {
+function getDb(): DatabaseSync {
   if (!db) {
     const dbPath = path.join(app.getPath('userData'), 'cache.db')
+    mkdirSync(path.dirname(dbPath), { recursive: true })
     db = new DatabaseSync(dbPath)
     // 应用退出前关闭数据库，确保写入完整性
     app.once('will-quit', () => {
-      // @ts-ignore: close() is available at runtime but missing from current node:sqlite types.
       db?.close()
       db = null
+      annotationStore = null
     })
     db.exec(`
       CREATE TABLE IF NOT EXISTS video_cache (
@@ -31,9 +32,9 @@ function getDb(): InstanceType<typeof DatabaseSync> {
 }
 
 export function getCachedContent(url: string): string | null {
-  const row = getDb()
-    .prepare('SELECT content FROM video_cache WHERE url = ?')
-    .get(url) as { content: string } | undefined
+  const row = getDb().prepare('SELECT content FROM video_cache WHERE url = ?').get(url) as
+    | { content: string }
+    | undefined
   return row?.content ?? null
 }
 
@@ -50,4 +51,9 @@ export function deleteCachedContent(url: string): void {
 export function getCachedUrls(): string[] {
   const rows = getDb().prepare('SELECT url FROM video_cache').all() as { url: string }[]
   return rows.map((r) => r.url)
+}
+
+export function getAnnotationStore(): AnnotationStore {
+  annotationStore ??= new AnnotationStore(getDb())
+  return annotationStore
 }

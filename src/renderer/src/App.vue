@@ -21,6 +21,9 @@ import {
 import LocalVideoPlayer from './components/LocalVideoPlayer.vue'
 import ExportDialog from './components/ExportDialog.vue'
 import DocumentReader from './components/DocumentReader.vue'
+import ChunkAnnotation from './components/ChunkAnnotation.vue'
+import { useAnnotations } from './composables/useAnnotations'
+import { formatTimecode } from '../../shared/timeline'
 import { buildVideoContext } from '../../shared/chat-context'
 import {
   importTimeline,
@@ -132,7 +135,27 @@ const videoLoaded = ref(false)
 const skipVideo = ref(true)
 const sourceMode = ref<InputSource>('url')
 const importedDocument = ref<TimelineDocument | null>(null)
-const importedDocumentKey = ref('')
+const activeSourceKey = ref('')
+const annotationFilter = ref<'all' | 'bookmarked' | 'notes'>('all')
+const {
+  annotations,
+  statuses: annotationStatuses,
+  loading: annotationsLoading,
+  loadError: annotationLoadError,
+  saveError: annotationSaveError,
+  load: reloadAnnotations,
+  update: updateAnnotation
+} = useAnnotations(activeSourceKey, window.api, timelineChunks)
+const unmatchedAnnotations = computed(() =>
+  [...annotations.value.values()].filter(
+    (annotation) =>
+      (annotation.bookmarked || annotation.note.trim()) &&
+      !timelineChunks.value.some((chunk) => chunk.id === annotation.chunkId)
+  )
+)
+const bookmarkedCount = computed(
+  () => timelineChunks.value.filter((chunk) => annotations.value.get(chunk.id)?.bookmarked).length
+)
 const importingDocument = ref(false)
 const documentFileInputRef = ref<HTMLInputElement | null>(null)
 const selectedLocalFile = ref<LocalVideoFile | null>(null)
@@ -148,6 +171,7 @@ const documentExportMsg = ref('')
 const documentExportError = ref('')
 const llmProvider = ref<LlmProvider>('deepseek')
 const includeTranscriptInExport = ref(true)
+const includeAnnotationsInExport = ref(true)
 const lastLlmReceipt = ref<LlmCallReceipt | null>(null)
 const receiptDetailsRef = ref<HTMLDetailsElement | null>(null)
 let unsubscribeLocalPlaybackProgress: (() => void) | null = null
@@ -288,7 +312,8 @@ function getNativeFilePath(file: File): string {
 
 function resetAnalysisState(): void {
   importedDocument.value = null
-  importedDocumentKey.value = ''
+  activeSourceKey.value = ''
+  annotationFilter.value = 'all'
   searchQuery.value = ''
   errorMsg.value = ''
   progressLog.value = []
@@ -755,6 +780,7 @@ async function parseVideo(): Promise<void> {
     })
     if (result.success && result.output) {
       timelineChunks.value = parseMarkdown(result.output)
+      activeSourceKey.value = url.value
       danmakuData.value = result.danmaku ?? null
       if (result.llmReceipt) lastLlmReceipt.value = result.llmReceipt
       // 保存到历史记录
@@ -804,6 +830,7 @@ async function parseLocalVideo(): Promise<void> {
     })
     if (result.success && result.output) {
       timelineChunks.value = parseMarkdown(result.output)
+      activeSourceKey.value = getLocalCacheKey(localFile.path)
       danmakuData.value = null
       if (result.llmReceipt) lastLlmReceipt.value = result.llmReceipt
       await saveHistory(result.output)
@@ -942,7 +969,7 @@ function showImportedDocument(document: TimelineDocument, key: string): void {
   currentPlatform.value = null
   sourceMode.value = 'document'
   importedDocument.value = document
-  importedDocumentKey.value = key
+  activeSourceKey.value = key
   url.value = document.fileName
   timelineChunks.value = document.chunks
   activeChunkId.value = document.chunks[0]?.id ?? ''
@@ -1065,8 +1092,10 @@ function getExportSourceLabel(): string {
   if (sourceMode.value === 'local' && selectedLocalFile.value) {
     return `来源：本地文件 · ${selectedLocalFile.value.name}`
   }
-  if (currentPlatform.value === 'bilibili') return `来源：B 站 · ${url.value}`
-  if (currentPlatform.value === 'youtube') return `来源：YouTube · ${url.value}`
+  if (currentPlatform.value === 'bilibili')
+    return `来源：B 站 · ${activeSourceKey.value || url.value}`
+  if (currentPlatform.value === 'youtube')
+    return `来源：YouTube · ${activeSourceKey.value || url.value}`
   return `来源：${url.value || '未知'}`
 }
 
@@ -1080,7 +1109,9 @@ function buildTimelineExportPayload(chunks = timelineChunks.value): TimelineExpo
     sourceLabel: getExportSourceLabel(),
     sourceUrl:
       importedDocument.value?.sourceUrl ??
-      (sourceMode.value === 'url' ? videoUrl.value || url.value : undefined),
+      (sourceMode.value === 'url'
+        ? activeSourceKey.value || videoUrl.value || url.value
+        : undefined),
     sourceKind: importedDocument.value?.sourceKind,
     modeLabel: importedDocument.value
       ? '导入资料'
@@ -1090,10 +1121,17 @@ function buildTimelineExportPayload(chunks = timelineChunks.value): TimelineExpo
     exportedAt: `导出时间：${new Date().toLocaleString('zh-CN')}`,
     highlightTerm: searchQuery.value.trim(),
     includeTranscript: includeTranscriptInExport.value,
+    includeAnnotations: includeAnnotationsInExport.value,
     llmProvider: llmProvider.value,
     llmReceipt: lastLlmReceipt.value ?? undefined,
     chunks: chunks.map((chunk) => ({
       id: chunk.id,
+      userNote: includeAnnotationsInExport.value
+        ? annotations.value.get(chunk.id)?.note
+        : undefined,
+      bookmarked: includeAnnotationsInExport.value
+        ? annotations.value.get(chunk.id)?.bookmarked
+        : undefined,
       startTime: toExportText(chunk.startTime),
       startSeconds: chunk.startSeconds,
       endTime: toExportText(chunk.endTime),
@@ -1122,10 +1160,12 @@ function openExportDialog(): void {
 async function exportTimelineDocument(
   format: TextExportFormat | 'pdf' = 'pdf',
   filteredOnly = false,
-  withTranscript = includeTranscriptInExport.value
+  withTranscript = includeTranscriptInExport.value,
+  withAnnotations = includeAnnotationsInExport.value
 ): Promise<void> {
   if (exportingDocument.value) return
   documentExportError.value = ''
+  includeAnnotationsInExport.value = withAnnotations
   includeTranscriptInExport.value = format === 'srt' || format === 'vtt' || withTranscript
   if (!timelineChunks.value.length) {
     documentExportError.value = '没有可导出的时间轴内容'
@@ -1241,6 +1281,7 @@ async function loadHistoryItem(item: HistoryItem): Promise<void> {
         danmakuData.value = null
         activeTab.value = 'timeline'
         timelineChunks.value = parseMarkdown(cached)
+        activeSourceKey.value = item.url
         cacheLoadedMsg.value = true
         setTimeout(() => {
           cacheLoadedMsg.value = false
@@ -1268,6 +1309,7 @@ async function loadHistoryItem(item: HistoryItem): Promise<void> {
       danmakuData.value = null
       activeTab.value = 'timeline'
       timelineChunks.value = parseMarkdown(cached)
+      activeSourceKey.value = item.url
       currentPlatform.value = item.platform
       videoId.value = extractVideoId(item.url, item.platform) || ''
       videoUrl.value = getWebviewUrl(videoId.value, item.platform)
@@ -1309,17 +1351,30 @@ function formatTime(timestamp: number): string {
   return `${date.getMonth() + 1}/${date.getDate()}`
 }
 
+function clearTimelineFilters(): void {
+  searchQuery.value = ''
+  annotationFilter.value = 'all'
+}
+
 // ─── 时间轴搜索 ────────────────────────────────────────────
 
 const filteredChunks = computed(() => {
+  const candidates = timelineChunks.value.filter((chunk) =>
+    annotationFilter.value === 'bookmarked'
+      ? annotations.value.get(chunk.id)?.bookmarked
+      : annotationFilter.value === 'notes'
+        ? Boolean(annotations.value.get(chunk.id)?.note.trim())
+        : true
+  )
   if (!searchQuery.value.trim()) {
-    return timelineChunks.value
+    return candidates
   }
 
-  const query = searchQuery.value.toLowerCase()
+  const query = searchQuery.value.trim().toLowerCase()
 
-  return timelineChunks.value
+  return candidates
     .filter((chunk) => {
+      if (annotations.value.get(chunk.id)?.note.toLowerCase().includes(query)) return true
       if (chunk.title.toLowerCase().includes(query)) return true
       if (chunk.summary.toLowerCase().includes(query)) return true
       if (chunk.keyPoints.some((kp) => kp.toLowerCase().includes(query))) return true
@@ -1570,9 +1625,10 @@ function handleGlobalPointerDown(e: PointerEvent): void {
       :busy="exportingDocument"
       :total-count="timelineChunks.length"
       :filtered-count="filteredChunks.length"
-      :has-filter="Boolean(searchQuery.trim())"
+      :has-filter="Boolean(searchQuery.trim()) || annotationFilter !== 'all'"
       :transcript-count="exportTranscriptLineCount"
       :include-transcript="includeTranscriptInExport"
+      :include-annotations="includeAnnotationsInExport"
       :error="documentExportError"
       @close="showExportDialog = false"
       @export="exportTimelineDocument"
@@ -2141,7 +2197,7 @@ function handleGlobalPointerDown(e: PointerEvent): void {
             v-if="activeTab === 'timeline' && timelineChunks.length"
             class="ml-auto mr-3 flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-slate-400 transition-colors hover:bg-blue-50 hover:text-blue-500 disabled:cursor-not-allowed disabled:text-slate-300"
             type="button"
-            :disabled="exportingDocument"
+            :disabled="exportingDocument || annotationsLoading"
             title="导出 Markdown、字幕、JSON 或 PDF"
             @click="openExportDialog"
           >
@@ -2272,7 +2328,37 @@ function handleGlobalPointerDown(e: PointerEvent): void {
                 <IconX class="w-3.5 h-3.5" />
               </button>
             </div>
-            <div v-if="searchQuery" class="mt-1.5 text-xs text-slate-400">
+            <div class="mt-2 flex items-center gap-1 text-xs" aria-label="时间轴筛选">
+              <button
+                v-for="filter in [
+                  ['all', '全部'],
+                  ['bookmarked', `已收藏 ${bookmarkedCount}`],
+                  ['notes', '有笔记']
+                ] as const"
+                :key="filter[0]"
+                class="rounded-md px-2 py-1 transition-colors"
+                :class="
+                  annotationFilter === filter[0]
+                    ? 'bg-blue-50 text-blue-600'
+                    : 'text-slate-400 hover:bg-slate-100'
+                "
+                :aria-pressed="annotationFilter === filter[0]"
+                @click="annotationFilter = filter[0]"
+              >
+                {{ filter[1] }}
+              </button>
+            </div>
+            <div v-if="annotationLoadError" role="alert" class="mt-2 text-xs text-red-600">
+              {{ annotationLoadError }}
+              <button class="underline" @click="reloadAnnotations">重试</button>
+            </div>
+            <div v-if="annotationSaveError" role="alert" class="mt-2 text-xs text-red-600">
+              笔记保存失败，请在片段下重试：{{ annotationSaveError }}
+            </div>
+            <div
+              v-if="searchQuery || annotationFilter !== 'all'"
+              class="mt-1.5 text-xs text-slate-400"
+            >
               找到 {{ filteredChunks.length }} 个结果
             </div>
           </div>
@@ -2280,6 +2366,49 @@ function handleGlobalPointerDown(e: PointerEvent): void {
           <!-- 时间轴列表 -->
           <div v-if="timelineChunks.length" class="flex-1 overflow-y-auto">
             <div class="px-3 py-3 space-y-2">
+              <div
+                v-if="!filteredChunks.length"
+                class="px-3 py-8 text-center text-sm text-slate-400"
+              >
+                {{
+                  annotationFilter === 'bookmarked'
+                    ? '还没有符合条件的收藏片段'
+                    : annotationFilter === 'notes'
+                      ? '还没有符合条件的笔记'
+                      : '没有找到匹配的内容'
+                }}
+                <button
+                  class="mt-2 block w-full text-xs text-blue-500"
+                  @click="clearTimelineFilters"
+                >
+                  查看全部片段
+                </button>
+              </div>
+              <details
+                v-if="unmatchedAnnotations.length"
+                class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs"
+              >
+                <summary class="cursor-pointer text-amber-800">
+                  旧版本片段的个人记录（{{ unmatchedAnnotations.length }}）
+                </summary>
+                <p class="mt-2 text-amber-700">
+                  重新解析后片段划分可能变化。这些记录仍保留在本机，不参与当前片段导出。
+                </p>
+                <div
+                  v-for="annotation in unmatchedAnnotations"
+                  :key="annotation.chunkId"
+                  class="mt-3 border-t border-amber-200 pt-2"
+                >
+                  <button class="text-blue-600" @click="seekTo(annotation.startSeconds)">
+                    {{ formatTimecode(annotation.startSeconds) }} · {{ annotation.title }}
+                  </button>
+                  <p v-if="annotation.bookmarked" class="mt-1 text-amber-700">已收藏</p>
+                  <p class="mt-1 whitespace-pre-wrap leading-6 text-slate-600 select-text">
+                    {{ annotation.note }}
+                  </p>
+                </div>
+              </details>
+
               <div
                 v-for="chunk in filteredChunks"
                 :key="chunk.id"
@@ -2358,23 +2487,38 @@ function handleGlobalPointerDown(e: PointerEvent): void {
                     />
                   </div>
 
-                  <!-- 底部操作行：展开 + 引用 -->
-                  <div class="flex items-center justify-between mt-1">
-                    <button
-                      class="text-[11px] text-blue-500 hover:text-blue-700 transition-colors"
-                      @click.stop="toggleCard(chunk.id)"
-                    >
-                      {{ isCardExpanded(chunk.id) ? '收起 ↑' : '展开全文 ↓' }}
-                    </button>
-                    <button
-                      class="flex items-center gap-1 text-[11px] text-slate-400 hover:text-blue-500 transition-colors"
-                      title="引用此片段到对话"
-                      @click.stop="quoteChunk(chunk)"
-                    >
-                      <IconCornerDownRight class="w-3 h-3" />
-                      引用
-                    </button>
-                  </div>
+                  <ChunkAnnotation
+                    :annotation="annotations.get(chunk.id)"
+                    :status="annotationStatuses.get(chunk.id)"
+                    :disabled="
+                      !activeSourceKey || annotationsLoading || Boolean(annotationLoadError)
+                    "
+                    @bookmark="
+                      updateAnnotation(chunk, {
+                        bookmarked: !annotations.get(chunk.id)?.bookmarked
+                      })
+                    "
+                    @note="updateAnnotation(chunk, { note: $event })"
+                    @retry="updateAnnotation(chunk, {})"
+                  >
+                    <template #leading>
+                      <button
+                        class="text-blue-500 hover:text-blue-700"
+                        @click.stop="toggleCard(chunk.id)"
+                      >
+                        {{ isCardExpanded(chunk.id) ? '收起 ↑' : '展开全文 ↓' }}
+                      </button>
+                    </template>
+                    <template #trailing>
+                      <button
+                        class="flex items-center gap-1 text-slate-400 hover:text-blue-500"
+                        title="引用此片段到对话"
+                        @click.stop="quoteChunk(chunk)"
+                      >
+                        <IconCornerDownRight class="h-3 w-3" />引用
+                      </button>
+                    </template>
+                  </ChunkAnnotation>
                 </div>
 
                 <!-- 弹幕反应（有弹幕数据时显示） -->
