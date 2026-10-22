@@ -1,6 +1,16 @@
 export type TimelineExportLlmProvider = 'deepseek' | 'gpt-5.6-sol'
 export type TextExportFormat = 'markdown' | 'json' | 'srt' | 'vtt'
 
+export interface TimelineExportOptions {
+  format: TextExportFormat | 'pdf'
+  filteredOnly: boolean
+  includeTranscript: boolean
+  includeAnnotations: boolean
+  title: string
+  useAiTitle: boolean
+  includeModelReceipt: boolean
+}
+
 export interface TimelineExportResult {
   success: boolean
   path?: string
@@ -49,6 +59,8 @@ export interface TimelineExportPayload {
   highlightTerm?: string
   includeTranscript: boolean
   includeAnnotations?: boolean
+  useAiTitle?: boolean
+  includeModelReceipt?: boolean
   llmProvider: TimelineExportLlmProvider
   llmReceipt?: TimelineExportReceipt
   chunks: TimelineExportChunk[]

@@ -22,6 +22,7 @@ import {
 import { ChatRequests } from './chat-requests'
 import { readChatStream, type StreamToolCall } from './chat-stream'
 import { buildTimelineExportHtml, type TimelineExportPayload } from './timeline-export'
+import { exportTimelinePdf } from './pdf-export'
 import { buildTextExport, EXPORT_FORMATS, safeExportFilename } from '../shared/timeline-formats'
 import type { TextExportFormat } from '../shared/export'
 import { extname, join, resolve } from 'path'
@@ -569,14 +570,6 @@ function runPlaybackTranscode(
   })
 }
 
-function buildFallbackDocumentTitle(payload: TimelineExportPayload): string {
-  const topic = payload.chunks
-    .map((chunk) => chunk.title.replace(/^[^：:]{1,12}[：:]/, '').trim())
-    .find(Boolean)
-  const base = topic || payload.title.trim() || '视频内容'
-  return `${base.slice(0, 36)}：核心观点与知识脉络`
-}
-
 function cleanGeneratedTitle(value: string): string {
   return value
     .split(/\r?\n/)[0]
@@ -591,7 +584,7 @@ function cleanGeneratedTitle(value: string): string {
 async function generateSummaryDocumentTitle(
   payload: TimelineExportPayload
 ): Promise<{ title: string; receipt: LlmCallReceipt }> {
-  const fallback = buildFallbackDocumentTitle(payload)
+  const fallback = payload.title.trim() || '视频解析文档'
   const startedAt = Date.now()
   let connection: LlmConnection | null = null
   try {
@@ -627,7 +620,8 @@ async function generateSummaryDocumentTitle(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${connection.apiKey}`
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30000)
     })
     if (!response.ok) throw new Error(`标题生成失败（HTTP ${response.status}）`)
 
@@ -648,7 +642,7 @@ async function generateSummaryDocumentTitle(
       connection ??
       ({
         provider: normalizeLlmProvider(payload.llmProvider),
-        label: payload.llmProvider === 'gpt-5.6-sol' ? 'GPT-5.6 Sol' : 'DeepSeek',
+        label: payload.llmProvider === 'gpt-5.6-sol' ? '自定义接口' : 'DeepSeek',
         apiKey: '',
         baseUrl: '',
         model: payload.llmProvider === 'gpt-5.6-sol' ? 'gpt-5.6-sol' : 'deepseek-chat'
@@ -887,68 +881,44 @@ ipcMain.handle(
   }
 )
 
-ipcMain.handle('export-timeline-document', async (_, payload: TimelineExportPayload) => {
-  try {
-    if (!payload.chunks.length) {
-      return { success: false, error: '没有可导出的时间轴内容' }
-    }
-
-    const titleResult = await generateSummaryDocumentTitle(payload)
-    const exportPayload = {
-      ...payload,
-      title: titleResult.title,
-      llmReceipt: titleResult.receipt
-    }
-    const safeTitle = titleResult.title
-      .replace(/[\\/:*?"<>|]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 80)
-    const { canceled, filePath } = await dialog.showSaveDialog({
-      title: '导出时间轴文档',
-      defaultPath: `${safeTitle || '视频解析文档'}.pdf`,
-      filters: [{ name: 'PDF 文档', extensions: ['pdf'] }]
-    })
-
-    if (canceled || !filePath) {
-      return { success: false, canceled: true }
-    }
-
-    const html = buildTimelineExportHtml(exportPayload)
-    const printWindow = new BrowserWindow({
-      width: 900,
-      height: 1200,
-      show: false,
-      webPreferences: {
-        sandbox: true,
-        nodeIntegration: false,
-        contextIsolation: true
-      }
-    })
-
-    try {
-      await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
-      const pdf = await printWindow.webContents.printToPDF({
-        printBackground: true,
-        preferCSSPageSize: true,
-        generateTaggedPDF: true,
-        generateDocumentOutline: true
+ipcMain.handle('export-timeline-document', (_, payload: TimelineExportPayload) =>
+  exportTimelinePdf(payload, {
+    chooseFile: async (filename) => {
+      const { canceled, filePath } = await dialog.showSaveDialog({
+        title: '导出时间轴文档',
+        defaultPath: filename,
+        filters: [{ name: 'PDF 文档', extensions: ['pdf'] }]
       })
-      await writeFile(filePath, pdf)
-    } finally {
-      printWindow.close()
+      return canceled ? null : (filePath ?? null)
+    },
+    suggestTitle: generateSummaryDocumentTitle,
+    writePdf: async (document, filePath) => {
+      const html = buildTimelineExportHtml(document)
+      const printWindow = new BrowserWindow({
+        width: 900,
+        height: 1200,
+        show: false,
+        webPreferences: {
+          sandbox: true,
+          nodeIntegration: false,
+          contextIsolation: true
+        }
+      })
+      try {
+        await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+        const pdf = await printWindow.webContents.printToPDF({
+          printBackground: true,
+          preferCSSPageSize: true,
+          generateTaggedPDF: true,
+          generateDocumentOutline: true
+        })
+        await writeFile(filePath, pdf)
+      } finally {
+        printWindow.close()
+      }
     }
-
-    return {
-      success: true,
-      path: filePath,
-      title: titleResult.title,
-      llmReceipt: titleResult.receipt
-    }
-  } catch (e) {
-    return { success: false, error: String(e) }
-  }
-})
+  })
+)
 
 // ─── IPC：停止解析 ────────────────────────────────────────
 ipcMain.handle('stop-parse', () => {

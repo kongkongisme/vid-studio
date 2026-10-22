@@ -89,6 +89,32 @@ test('real IPC preserves imported sources, notes, exports and preferences across
     expect(exported.chunks[0].userNote).toContain('平衡成本')
     expect(exported.chunks[0].bookmarked).toBe(true)
 
+    const pdfOutput = testInfo.outputPath('offline-notes.pdf')
+    await application!.evaluate(({ dialog, BrowserWindow }, filePath) => {
+      dialog.showSaveDialog = async () => ({ canceled: false, filePath })
+      BrowserWindow.getAllWindows()[0].setSize(900, 600)
+      globalThis.fetch = async () => {
+        throw new Error('Network must not be used for offline export')
+      }
+    }, pdfOutput)
+    await page.getByRole('button', { name: '导出', exact: true }).click()
+    await exportDialog.getByLabel('文件格式').selectOption('pdf')
+    await exportDialog.getByLabel('文档标题', { exact: true }).fill('离线课程：复习讲义')
+    await expect(
+      exportDialog.getByLabel('使用 AI 重新拟定标题', { exact: false })
+    ).not.toBeChecked()
+    await expect(exportDialog.getByLabel('包含模型调用信息', { exact: false })).not.toBeChecked()
+    await expect(exportDialog.getByRole('button', { name: '选择保存位置' })).toBeInViewport()
+    await page.screenshot({ path: testInfo.outputPath('offline-export-small.png') })
+    await exportDialog.getByRole('button', { name: '选择保存位置' }).click()
+    await expect(exportDialog).not.toBeVisible()
+    const pdf = await readFile(pdfOutput)
+    expect(pdf.subarray(0, 4).toString()).toBe('%PDF')
+    expect(pdf.length).toBeGreaterThan(1000)
+    await application!.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setSize(1440, 820)
+    )
+
     await page.getByRole('button', { name: '打开设置与诊断' }).click()
     const settingsDialog = page.getByRole('dialog', { name: '设置与诊断' })
     await settingsDialog.getByRole('tab', { name: '使用偏好' }).click()

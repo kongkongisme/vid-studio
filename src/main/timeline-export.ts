@@ -26,7 +26,7 @@ function renderHighlightedText(value: string, highlightTerm = ''): string {
 export function buildTimelineExportHtml(payload: TimelineExportPayload): string {
   const title = payload.title.trim() || '视频解析文档'
   const highlightTerm = payload.highlightTerm?.trim() ?? ''
-  const receipt = payload.llmReceipt
+  const receipt = payload.includeModelReceipt ? payload.llmReceipt : undefined
   const receiptHtml = receipt
     ? `<section class="receipt">
         <div class="receipt-title">模型调用凭证 <span class="receipt-status ${receipt.status}">${receipt.status === 'success' ? '接口已响应' : '已降级'}</span></div>
@@ -103,6 +103,7 @@ export function buildTimelineExportHtml(payload: TimelineExportPayload): string 
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'" />
   <title>${escapeHtml(title)}</title>
   <style>
     @page { size: A4; margin: 20mm 18mm 22mm; }
@@ -112,23 +113,9 @@ export function buildTimelineExportHtml(payload: TimelineExportPayload): string 
       margin: 0;
       color: #172033;
       font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-      background: #f8fafc;
+      background: white;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
-    }
-    body::before {
-      content: "视析工作站";
-      position: fixed;
-      inset: 0;
-      z-index: 0;
-      color: rgba(15, 23, 42, 0.055);
-      font-size: 54px;
-      font-weight: 700;
-      letter-spacing: 0.18em;
-      display: grid;
-      place-items: center;
-      transform: rotate(-28deg);
-      pointer-events: none;
     }
     main { position: relative; z-index: 1; background: white; padding: 28px 30px 34px; }
     .front-matter { break-after: page; }
@@ -296,7 +283,7 @@ export function buildTimelineExportHtml(payload: TimelineExportPayload): string 
           <span>${escapeHtml(payload.exportedAt)}</span>
           <span>共 ${payload.chunks.length} 个片段</span>
         </div>
-        <div class="notice">本文档由视析工作站根据视频解析内容生成，${payload.includeTranscript ? '包含原文记录，' : '未包含原文记录，'}导出为 PDF 以便查阅和归档。目录条目可点击跳转，阅读器侧边栏同时提供章节书签。</div>
+        <div class="notice">本文档由视析工作站根据${payload.sourceKind === 'subtitle' ? '导入字幕整理，未生成 AI 摘要，' : '当前资料生成，'}${payload.includeTranscript ? '包含原文记录，' : '未包含原文记录，'}导出为 PDF 以便查阅和归档。目录条目可点击跳转，阅读器侧边栏同时提供章节书签。</div>
       </header>
       ${receiptHtml}
       <nav class="toc" aria-label="文档目录">

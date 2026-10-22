@@ -4,7 +4,7 @@ import type { LibraryMatch } from '../../shared/library'
 import type {
   TimelineExportPayload,
   TimelineExportResult,
-  TextExportFormat
+  TimelineExportOptions
 } from '../../shared/export'
 import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue'
 import {
@@ -1143,12 +1143,13 @@ function openExportDialog(): void {
   showExportDialog.value = true
 }
 
-async function exportTimelineDocument(
-  format: TextExportFormat | 'pdf' = 'pdf',
-  filteredOnly = false,
-  withTranscript = includeTranscriptInExport.value,
-  withAnnotations = includeAnnotationsInExport.value
-): Promise<void> {
+async function exportTimelineDocument(options: TimelineExportOptions): Promise<void> {
+  const {
+    format,
+    filteredOnly,
+    includeTranscript: withTranscript,
+    includeAnnotations: withAnnotations
+  } = options
   if (exportingDocument.value) return
   documentExportError.value = ''
   includeAnnotationsInExport.value = withAnnotations
@@ -1178,6 +1179,9 @@ async function exportTimelineDocument(
     const payload = JSON.parse(
       JSON.stringify(buildTimelineExportPayload(chunks))
     ) as TimelineExportPayload
+    payload.title = options.title || payload.title
+    payload.useAiTitle = options.useAiTitle
+    payload.includeModelReceipt = options.includeModelReceipt
     const result: TimelineExportResult =
       format === 'pdf'
         ? await exportDocument!(payload)
@@ -1601,6 +1605,7 @@ function handleGlobalPointerDown(e: PointerEvent): void {
     />
     <ExportDialog
       :open="showExportDialog"
+      :title="getExportTitle()"
       :busy="exportingDocument"
       :total-count="timelineChunks.length"
       :filtered-count="filteredChunks.length"
