@@ -159,14 +159,26 @@ export function buildTextExport(payload: TimelineExportPayload, format: TextExpo
 }
 
 export function safeExportFilename(title: string): string {
-  const name = title
+  const encoder = new TextEncoder()
+  // Repair unpaired surrogates before using a name in URI-encoded collection links.
+  const clean = new TextDecoder().decode(encoder.encode(title)).normalize('NFC')
+  const candidate = clean
     // Control characters cannot appear in portable filenames.
     // eslint-disable-next-line no-control-regex
     .replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/^\.+|[. ]+$/g, '')
-    .slice(0, 80)
     .trim()
+  let name = ''
+  let bytes = 0
+  for (const character of candidate) {
+    const size = encoder.encode(character).length
+    // Leave room for collection numbering and sidecar suffixes on 255-byte filesystems.
+    if (name.length + character.length > 80 || bytes + size > 200) break
+    name += character
+    bytes += size
+  }
+  name = name.replace(/[. ]+$/g, '')
   return name && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name) ? name : '视频时间轴'
 }

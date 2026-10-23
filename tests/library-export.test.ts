@@ -140,6 +140,35 @@ describe('library collection export', () => {
     expect(await readdir(directory)).toEqual([])
   })
 
+  it('writes long multilingual titles and old-note sidecars within portable filename limits', async () => {
+    const deps = dependencies()
+    deps.history = async () =>
+      items.map((item, index) => ({
+        ...item,
+        title: index ? '中文课程'.repeat(40) : 'A' + '😀'.repeat(40)
+      }))
+    deps.annotations = (source) => [
+      {
+        sourceKey: source,
+        chunkId: 'orphan',
+        startSeconds: 0,
+        title: '旧版',
+        note: '保留',
+        bookmarked: false,
+        updatedAt: 1
+      }
+    ]
+    const result = await exportLibrary(request, deps)
+    expect(result.success, result.error).toBe(true)
+    const files = await readdir(result.path!)
+    expect(files).toHaveLength(5)
+    expect(files.filter((file) => file.endsWith('.旧版笔记.json'))).toHaveLength(2)
+    for (const file of files) {
+      expect(Buffer.byteLength(file)).toBeLessThanOrEqual(255)
+      expect(() => encodeURIComponent(file)).not.toThrow()
+    }
+  })
+
   it.each(['missing', 'broken', 'removed'])(
     'fails the whole selection before choosing a folder for %s sources',
     async (kind) => {

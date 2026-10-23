@@ -95,4 +95,13 @@ describe('portable timeline exports', () => {
     expect(safeExportFilename('CON')).toBe('视频时间轴')
     expect(safeExportFilename('   ')).toBe('视频时间轴')
   })
+
+  it('keeps filename Unicode intact and leaves byte room for collection suffixes', () => {
+    const emoji = safeExportFilename('A' + '😀'.repeat(40))
+    expect(() => encodeURIComponent(emoji)).not.toThrow()
+    expect(emoji).toBe('A' + '😀'.repeat(39))
+    expect(Buffer.byteLength(safeExportFilename('中文'.repeat(100)))).toBeLessThanOrEqual(200)
+    expect(safeExportFilename('a'.repeat(79) + '.tail')).not.toMatch(/[. ]$/)
+    expect(() => encodeURIComponent(safeExportFilename('broken\ud800title'))).not.toThrow()
+  })
 })
