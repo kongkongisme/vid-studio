@@ -428,7 +428,9 @@ test('bulk export keeps selection explicit, handles cancellation and failure, an
     window.mockState.finishLibraryExport?.({ success: false, error: '模拟磁盘空间不足' })
   )
   await expect(library.getByRole('alert')).toContainText('模拟磁盘空间不足')
-  await library.getByRole('button', { name: '导出所选（2）' }).click()
+  await library.getByRole('button', { name: '重试', exact: true }).click()
+  await expect(library.getByRole('button', { name: '正在导出…' })).toBeDisabled()
+  expect(await page.evaluate(() => window.mockState.libraryExports.length)).toBe(3)
   await page.evaluate(() =>
     window.mockState.finishLibraryExport?.({
       success: true,

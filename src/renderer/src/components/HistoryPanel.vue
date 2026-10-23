@@ -28,6 +28,7 @@ const favoritesOnly = ref(false)
 const loading = ref(false)
 const mutating = ref(false)
 const error = ref('')
+const errorAction = ref<'search' | 'export'>('search')
 const result = ref<LibraryResult>({ entries: [], total: 0, totalSources: 0, unavailableSources: 0 })
 const editingId = ref('')
 const titleDraft = ref('')
@@ -61,6 +62,7 @@ async function search(append = false): Promise<void> {
   const current = ++request
   loading.value = true
   error.value = ''
+  errorAction.value = 'search'
   try {
     const response = await window.api.searchLibrary({
       query: query.value,
@@ -137,6 +139,7 @@ function toggleAll(): void {
 }
 
 function toggleSelecting(): void {
+  if (errorAction.value === 'export') error.value = ''
   selecting.value = !selecting.value
   selectedIds.value = []
   exportMessage.value = ''
@@ -148,6 +151,7 @@ async function exportSelected(): Promise<void> {
   if (!selectedIds.value.length || exporting.value || loading.value) return
   exporting.value = true
   error.value = ''
+  errorAction.value = 'export'
   exportMessage.value = ''
   try {
     const response = await api.exportLibrary({
@@ -183,6 +187,7 @@ async function mutate(action: () => Promise<void>): Promise<void> {
   if (mutating.value) return
   mutating.value = true
   error.value = ''
+  errorAction.value = 'search'
   try {
     await action()
     editingId.value = ''
@@ -357,7 +362,12 @@ function select(entry: LibraryEntry, match?: LibraryMatch): void {
         class="mx-6 mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"
       >
         {{ error || openError }}
-        <button v-if="error" class="ml-2 underline" :disabled="loading" @click="search()">
+        <button
+          v-if="error"
+          class="ml-2 underline"
+          :disabled="loading || exporting"
+          @click="errorAction === 'export' ? exportSelected() : search()"
+        >
           重试
         </button>
       </div>
