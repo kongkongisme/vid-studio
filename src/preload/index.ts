@@ -3,6 +3,7 @@ import type { HistoryItem } from '../shared/history'
 import type { SettingsSnapshot, SettingsUpdate, DiagnosticReport } from '../shared/settings'
 import type { ChatRequest, ChatResult, ChatEvent, ChatMessage } from '../shared/chat'
 import type { LibraryQuery, LibraryResult } from '../shared/library'
+import type { LibraryExportRequest, LibraryExportResult } from '../shared/library-export'
 import type { TimelineExportPayload, TextExportFormat } from '../shared/export'
 import type { ReadingPosition, ReadingPositionInput } from '../shared/reading-position'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
@@ -159,6 +160,8 @@ const api = {
 
   // 历史管理
   getHistory: (): Promise<HistoryItem[]> => ipcRenderer.invoke('get-history'),
+  exportLibrary: (request: LibraryExportRequest): Promise<LibraryExportResult> =>
+    ipcRenderer.invoke('export-library', request),
   searchLibrary: (query: LibraryQuery): Promise<LibraryResult> =>
     ipcRenderer.invoke('search-library', query),
   renameHistory: (id: string, title: string): Promise<void> =>

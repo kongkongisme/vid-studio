@@ -5,7 +5,7 @@ import {
   type ElectronApplication,
   type Page
 } from '@playwright/test'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
@@ -216,6 +216,41 @@ test('real IPC preserves imported sources, notes, exports and preferences across
         .getByText('用缓存失效时间平衡成本和新鲜度。', { exact: true })
     ).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('library-restored-native.png') })
+
+    await application!.evaluate(({ dialog, BrowserWindow }, folder) => {
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
+      BrowserWindow.getAllWindows()[0].setSize(900, 600)
+    }, directory)
+    await page.getByRole('button', { name: '打开资料库' }).click()
+    await library.getByLabel('搜索标题、章节、原文和我的笔记').fill('')
+    await library.getByRole('button', { name: '批量导出', exact: true }).click()
+    await library.getByLabel('选择已显示资料', { exact: true }).check()
+    await expect(library.getByRole('button', { name: '导出所选（2）' })).toBeEnabled()
+    await library.getByRole('combobox', { name: '导出格式', exact: true }).selectOption('json')
+    await expect(library.getByRole('button', { name: '导出所选（2）' })).toBeInViewport()
+    await page.screenshot({ path: testInfo.outputPath('library-bulk-export-small.png') })
+    await library.getByRole('button', { name: '导出所选（2）' }).click()
+    await expect(library.getByRole('status')).toContainText('已导出 2 份资料')
+    const collection = (await readdir(directory)).find((name) => name.startsWith('VidStudio-'))!
+    const collectionFiles = await readdir(join(directory, collection))
+    expect(collectionFiles).toHaveLength(3)
+    const courseFile = collectionFiles.find(
+      (name) => name.includes('离线课程') && name.endsWith('.json')
+    )!
+    const coursePath = join(directory, collection, courseFile)
+    const course = JSON.parse(await readFile(coursePath, 'utf8'))
+    expect(course.chunks[0].userNote).toContain('平衡成本')
+    expect(course.chunks[0].bookmarked).toBe(true)
+    expect(course.chunks[0].transcript[0]).toMatchObject({ seconds: 1.25, endSeconds: 4.5 })
+    await library.getByRole('button', { name: '关闭资料库', exact: true }).click()
+    await page.getByLabel('选择字幕或笔记文件').setInputFiles(coursePath)
+    await expect(reader().getByRole('heading', { name: '离线课程', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: '取消收藏片段' })).toBeVisible()
+    await expect(
+      page
+        .locator('[id^="timeline-"]')
+        .getByText('用缓存失效时间平衡成本和新鲜度。', { exact: true })
+    ).toBeVisible()
     expect(rendererErrors).toEqual([])
   } finally {
     await application?.close().catch(() => undefined)

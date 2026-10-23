@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
 import {
   IconSearch,
   IconX,
@@ -15,6 +15,7 @@ import {
 import type { HistoryItem } from '../../../shared/history'
 import type { LibraryEntry, LibraryMatch, LibraryResult } from '../../../shared/library'
 import { formatTimecode } from '../../../shared/timeline'
+import { MAX_LIBRARY_EXPORT_SOURCES } from '../../../shared/library-export'
 
 const api = window.api
 const props = defineProps<{ open: boolean; busy: boolean; openError: string }>()
@@ -31,6 +32,20 @@ const result = ref<LibraryResult>({ entries: [], total: 0, totalSources: 0, unav
 const editingId = ref('')
 const titleDraft = ref('')
 const removingId = ref('')
+const selecting = ref(false)
+const selectedIds = ref<string[]>([])
+const exportFormat = ref<'markdown' | 'json'>('markdown')
+const includeTranscript = ref(true)
+const includeAnnotations = ref(true)
+const exporting = ref(false)
+const exportMessage = ref('')
+const selectable = computed(() => result.value.entries.filter((entry) => entry.cached))
+const bulkSelectable = computed(() => selectable.value.slice(0, MAX_LIBRARY_EXPORT_SOURCES))
+const allSelected = computed(
+  () =>
+    bulkSelectable.value.length > 0 &&
+    bulkSelectable.value.every((entry) => selectedIds.value.includes(entry.item.id))
+)
 let request = 0
 let debounce: ReturnType<typeof setTimeout> | undefined
 const labels: Record<LibraryMatch['kind'], string> = {
@@ -56,6 +71,10 @@ async function search(append = false): Promise<void> {
     result.value = append
       ? { ...response, entries: [...result.value.entries, ...response.entries] }
       : response
+    if (!append)
+      selectedIds.value = selectedIds.value.filter((id) =>
+        response.entries.some((entry) => entry.item.id === id && entry.cached)
+      )
   } catch (reason) {
     if (current === request) error.value = String(reason)
   } finally {
@@ -70,6 +89,9 @@ watch(
     request++
     editingId.value = ''
     removingId.value = ''
+    selecting.value = false
+    selectedIds.value = []
+    exportMessage.value = ''
     await nextTick()
     if (open) {
       dialog.value?.showModal()
@@ -79,6 +101,8 @@ watch(
   }
 )
 watch([query, favoritesOnly], () => {
+  selectedIds.value = []
+  exportMessage.value = ''
   clearTimeout(debounce)
   request++
   if (!props.open) return
@@ -93,7 +117,52 @@ onUnmounted(() => {
 })
 
 function close(): void {
-  if (!props.busy && !mutating.value) dialog.value?.close()
+  if (!props.busy && !mutating.value && !exporting.value) dialog.value?.close()
+}
+
+function toggleSelection(id: string, checked: boolean): void {
+  if (checked && selectedIds.value.length >= MAX_LIBRARY_EXPORT_SOURCES) {
+    error.value = `每次最多选择 ${MAX_LIBRARY_EXPORT_SOURCES} 份资料，请分批导出`
+    return
+  }
+  selectedIds.value = checked
+    ? [...selectedIds.value, id]
+    : selectedIds.value.filter((value) => value !== id)
+  exportMessage.value = ''
+}
+
+function toggleAll(): void {
+  selectedIds.value = allSelected.value ? [] : bulkSelectable.value.map((entry) => entry.item.id)
+  exportMessage.value = ''
+}
+
+function toggleSelecting(): void {
+  selecting.value = !selecting.value
+  selectedIds.value = []
+  exportMessage.value = ''
+  editingId.value = ''
+  removingId.value = ''
+}
+
+async function exportSelected(): Promise<void> {
+  if (!selectedIds.value.length || exporting.value || loading.value) return
+  exporting.value = true
+  error.value = ''
+  exportMessage.value = ''
+  try {
+    const response = await api.exportLibrary({
+      ids: [...selectedIds.value],
+      format: exportFormat.value,
+      includeTranscript: includeTranscript.value,
+      includeAnnotations: includeAnnotations.value
+    })
+    if (response.success) exportMessage.value = `已导出 ${response.count} 份资料：${response.path}`
+    else if (!response.canceled) error.value = response.error || '批量导出失败，请重试'
+  } catch (reason) {
+    error.value = String(reason)
+  } finally {
+    exporting.value = false
+  }
 }
 
 function beginRemove(id: string): void {
@@ -151,7 +220,7 @@ function select(entry: LibraryEntry, match?: LibraryMatch): void {
     class="library-dialog w-[720px] max-w-[calc(100vw-32px)] max-h-[calc(100vh-48px)] overflow-hidden rounded-2xl border border-slate-200 p-0 text-slate-800 shadow-xl"
     aria-labelledby="library-title"
     @close="emit('close')"
-    @cancel="(busy || mutating) && $event.preventDefault()"
+    @cancel="(busy || mutating || exporting) && $event.preventDefault()"
     @keydown.esc.prevent.stop="close"
     @click="$event.target === dialog && close()"
   >
@@ -162,7 +231,7 @@ function select(entry: LibraryEntry, match?: LibraryMatch): void {
           <button
             aria-label="关闭资料库"
             class="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100"
-            :disabled="busy || mutating"
+            :disabled="busy || mutating || exporting"
             @click="close"
           >
             <IconX class="h-5 w-5" />
@@ -177,6 +246,7 @@ function select(entry: LibraryEntry, match?: LibraryMatch): void {
             id="library-search"
             ref="searchInput"
             v-model="query"
+            :disabled="exporting"
             type="search"
             maxlength="200"
             placeholder="输入学过的概念…"
@@ -191,13 +261,96 @@ function select(entry: LibraryEntry, match?: LibraryMatch): void {
           <label class="flex items-center gap-2 text-sm"
             ><input
               v-model="favoritesOnly"
+              :disabled="exporting"
               type="checkbox"
               class="accent-blue-500"
             />仅看收藏资料</label
           >
-          <span>仅在本机搜索</span>
+          <button
+            class="rounded px-2 py-1 text-sm text-blue-600 hover:bg-blue-50 disabled:opacity-50"
+            :disabled="busy || mutating || exporting"
+            :aria-pressed="selecting"
+            @click="toggleSelecting"
+          >
+            {{ selecting ? '退出多选' : '批量导出' }}
+          </button>
         </div>
       </header>
+      <section
+        v-if="selecting"
+        aria-label="批量导出选项"
+        class="shrink-0 space-y-3 border-b border-slate-200 bg-slate-50 px-6 py-3 text-sm"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <label class="flex items-center gap-2">
+            <input
+              type="checkbox"
+              class="accent-blue-500"
+              :checked="allSelected"
+              :indeterminate="selectedIds.length > 0 && !allSelected"
+              :disabled="loading || busy || exporting || !selectable.length"
+              @change="toggleAll"
+            />
+            {{
+              selectable.length > MAX_LIBRARY_EXPORT_SOURCES
+                ? `选择前 ${MAX_LIBRARY_EXPORT_SOURCES} 份已显示资料`
+                : '选择已显示资料'
+            }}
+          </label>
+          <span class="text-xs text-slate-500"
+            >已选 {{ selectedIds.length }} / 最多 {{ MAX_LIBRARY_EXPORT_SOURCES }} 份</span
+          >
+        </div>
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <label class="flex items-center gap-2"
+            >导出格式
+            <select
+              v-model="exportFormat"
+              :disabled="exporting"
+              class="rounded border border-slate-200 bg-white px-2 py-1"
+            >
+              <option value="markdown">Markdown 笔记</option>
+              <option value="json">JSON 时间轴</option>
+            </select>
+          </label>
+          <label class="flex items-center gap-2"
+            ><input
+              v-model="includeTranscript"
+              :disabled="exporting"
+              type="checkbox"
+              class="accent-blue-500"
+            />附带原文</label
+          >
+          <label class="flex items-center gap-2"
+            ><input
+              v-model="includeAnnotations"
+              :disabled="exporting"
+              type="checkbox"
+              class="accent-blue-500"
+            />附带个人笔记与收藏</label
+          >
+        </div>
+        <p class="text-xs leading-5 text-slate-500">
+          每份资料生成一个文件，附资料目录；导出完整章节，不受搜索关键词裁剪。切换搜索会清空选择。缺少缓存的资料不可选。
+        </p>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <p class="text-xs text-slate-500">不含视频、聊天记录和设置。</p>
+          <button
+            class="rounded-lg bg-blue-600 px-3 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
+            :disabled="!selectedIds.length || loading || busy || exporting"
+            @click="exportSelected"
+          >
+            {{ exporting ? '正在导出…' : `导出所选（${selectedIds.length}）` }}
+          </button>
+        </div>
+      </section>
+      <p
+        v-if="exportMessage"
+        role="status"
+        class="mx-6 mt-3 break-all rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800"
+      >
+        {{ exportMessage }}
+      </p>
       <div
         v-if="error || openError"
         role="alert"
@@ -208,7 +361,7 @@ function select(entry: LibraryEntry, match?: LibraryMatch): void {
           重试
         </button>
       </div>
-      <div class="min-h-[180px] flex-1 overflow-y-auto px-3 py-2" :aria-busy="loading || busy">
+      <div class="min-h-0 flex-1 overflow-y-auto px-3 py-2" :aria-busy="loading || busy">
         <p
           v-if="!result.entries.length && !loading && !error"
           class="px-3 py-12 text-center text-sm leading-7 text-slate-500"
@@ -227,6 +380,22 @@ function select(entry: LibraryEntry, match?: LibraryMatch): void {
           class="border-b border-slate-100 px-3 py-4 last:border-0"
         >
           <div class="flex items-start gap-3">
+            <input
+              v-if="selecting"
+              type="checkbox"
+              :aria-label="`选择资料：${entry.item.title}`"
+              :checked="selectedIds.includes(entry.item.id)"
+              :disabled="
+                !entry.cached ||
+                loading ||
+                busy ||
+                exporting ||
+                (!selectedIds.includes(entry.item.id) &&
+                  selectedIds.length >= MAX_LIBRARY_EXPORT_SOURCES)
+              "
+              class="mt-1.5 h-4 w-4 shrink-0 accent-blue-500"
+              @change="toggleSelection(entry.item.id, ($event.target as HTMLInputElement).checked)"
+            />
             <component
               :is="
                 entry.item.platform === 'document'
@@ -271,7 +440,7 @@ function select(entry: LibraryEntry, match?: LibraryMatch): void {
               <button
                 v-else
                 class="block max-w-full text-left text-sm font-medium leading-6 hover:text-blue-600 disabled:opacity-60"
-                :disabled="busy || loading || mutating"
+                :disabled="busy || loading || mutating || selecting || exporting"
                 @click="select(entry)"
               >
                 <span class="break-words"
@@ -292,7 +461,7 @@ function select(entry: LibraryEntry, match?: LibraryMatch): void {
                 · {{ entry.cached ? '已保存' : '缺少解析缓存' }}
               </p>
             </div>
-            <div class="flex shrink-0 gap-0.5">
+            <div v-if="!selecting" class="flex shrink-0 gap-0.5">
               <button
                 :aria-label="`${entry.item.favorited ? '取消收藏' : '收藏资料'}：${entry.item.title}`"
                 :aria-pressed="entry.item.favorited"
@@ -349,7 +518,7 @@ function select(entry: LibraryEntry, match?: LibraryMatch): void {
               v-for="match in entry.matches"
               :key="`${match.kind}:${match.chunkId}`"
               class="block w-full rounded-lg px-2 py-1.5 text-left hover:bg-blue-50 disabled:opacity-60"
-              :disabled="busy || loading || mutating"
+              :disabled="busy || loading || mutating || selecting || exporting"
               @click="select(entry, match)"
             >
               <p class="text-xs text-slate-500">
@@ -372,7 +541,7 @@ function select(entry: LibraryEntry, match?: LibraryMatch): void {
         <button
           v-if="result.entries.length < result.total"
           class="my-3 w-full rounded-lg py-2 text-sm text-blue-600 hover:bg-blue-50 disabled:opacity-50"
-          :disabled="loading || busy"
+          :disabled="loading || busy || exporting"
           @click="search(true)"
         >
           加载更多（已显示 {{ result.entries.length }} / {{ result.total }}）
@@ -394,7 +563,7 @@ function select(entry: LibraryEntry, match?: LibraryMatch): void {
         >
         <button
           class="rounded px-2 py-1 hover:bg-slate-100"
-          :disabled="busy || mutating"
+          :disabled="busy || mutating || exporting"
           @click="close"
         >
           关闭 · Esc

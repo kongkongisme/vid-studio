@@ -3,6 +3,7 @@ import type { HistoryItem } from '../shared/history'
 import type { SettingsSnapshot, SettingsUpdate, DiagnosticReport } from '../shared/settings'
 import type { ChatRequest, ChatResult, ChatEvent, ChatMessage } from '../shared/chat'
 import type { LibraryQuery, LibraryResult } from '../shared/library'
+import type { LibraryExportRequest, LibraryExportResult } from '../shared/library-export'
 import type { TimelineExportPayload, TextExportFormat } from '../shared/export'
 import type { ReadingPosition, ReadingPositionInput } from '../shared/reading-position'
 import { ElectronAPI } from '@electron-toolkit/preload'
@@ -116,6 +117,7 @@ declare global {
       saveAnnotation: (input: AnnotationInput) => Promise<ChunkAnnotation>
       // 历史管理
       getHistory: () => Promise<HistoryItem[]>
+      exportLibrary: (request: LibraryExportRequest) => Promise<LibraryExportResult>
       searchLibrary: (query: LibraryQuery) => Promise<LibraryResult>
       renameHistory: (id: string, title: string) => Promise<void>
       addHistory: (item: Omit<HistoryItem, 'id' | 'createdAt'>) => Promise<void>

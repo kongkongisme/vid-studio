@@ -26,6 +26,9 @@ interface MockState {
   }[]
   canceledPlaybacks: number
   emitPlayback?: Parameters<NonNullable<Window['api']['onLocalPlaybackProgress']>>[0]
+  libraryExports: Parameters<Window['api']['exportLibrary']>[0][]
+  librarySize: number
+  finishLibraryExport?: (result: Awaited<ReturnType<Window['api']['exportLibrary']>>) => void
 }
 declare global {
   interface Window {
@@ -52,7 +55,9 @@ async function installApi(page: Page): Promise<void> {
       playbackRequests: [],
       canceledPlaybacks: 0,
       failLoad: false,
-      deferDiagnosis: false
+      deferDiagnosis: false,
+      libraryExports: [],
+      librarySize: 3
     }
     window.mockState = state
     Object.defineProperty(navigator, 'clipboard', {
@@ -103,6 +108,44 @@ async function installApi(page: Page): Promise<void> {
         state.cachedSources.push(key)
       },
       addHistory: async () => undefined,
+      searchLibrary: async (query) => {
+        const sourceIds =
+          state.librarySize === 3
+            ? ['one', 'two', 'missing']
+            : Array.from({ length: state.librarySize }, (_, n) => String(n + 1))
+        const entries = sourceIds
+          .map((id) => ({
+            item: {
+              id,
+              url: `document:${id}`,
+              title: `资料 ${id}`,
+              platform: 'document' as const,
+              mode: 'imported' as const,
+              createdAt: 1,
+              favorited: id === 'one'
+            },
+            cached: id !== 'missing',
+            matches: [],
+            moreMatches: false
+          }))
+          .filter(
+            (entry) =>
+              (!query.favoritesOnly || entry.item.favorited) &&
+              (!query.query || entry.item.title.includes(query.query))
+          )
+        return {
+          entries: entries.slice(query.offset || 0, (query.offset || 0) + 50),
+          total: entries.length,
+          totalSources: sourceIds.length,
+          unavailableSources: state.librarySize === 3 ? 1 : 0
+        }
+      },
+      exportLibrary: (request) => {
+        state.libraryExports.push(request)
+        return new Promise((resolve) => {
+          state.finishLibraryExport = resolve
+        })
+      },
       onParseProgress: () => () => undefined,
       parseVideo: () => {
         state.parseCalls++
@@ -336,4 +379,95 @@ test('ignores old playback results for the same file and cancels previews when l
   })
   await expect(page.getByRole('article', { name: '导入资料阅读器' })).toBeVisible()
   await expect(page.getByText('离开后的旧错误')).toHaveCount(0)
+})
+
+test('bulk export keeps selection explicit, handles cancellation and failure, and locks pending actions', async ({
+  page
+}) => {
+  await page.setViewportSize({ width: 900, height: 600 })
+  const trigger = page.getByRole('button', { name: '打开资料库' })
+  await trigger.click()
+  const library = page.getByRole('dialog', { name: '资料库', exact: true })
+  await library.getByRole('button', { name: '批量导出', exact: true }).click()
+  await expect(library.getByRole('button', { name: '导出所选（0）' })).toBeDisabled()
+  await expect(library.getByLabel('选择资料：资料 missing', { exact: true })).toBeDisabled()
+  await library.getByLabel('选择资料：资料 one', { exact: true }).check()
+  await expect(library.getByLabel('选择已显示资料', { exact: true })).toHaveJSProperty(
+    'indeterminate',
+    true
+  )
+  await library.getByLabel('选择已显示资料', { exact: true }).check()
+  await library.getByRole('combobox', { name: '导出格式', exact: true }).selectOption('json')
+  await library.getByLabel('附带个人笔记与收藏', { exact: true }).uncheck()
+  await library.getByRole('button', { name: '导出所选（2）' }).click()
+  await expect(library.getByRole('button', { name: '正在导出…' })).toBeDisabled()
+  await expect(library.getByLabel('搜索标题、章节、原文和我的笔记')).toBeDisabled()
+  await expect(library.getByRole('button', { name: '关闭资料库' })).toBeDisabled()
+  await page.keyboard.press('Escape')
+  await expect(library).toBeVisible()
+  expect(await page.evaluate(() => window.mockState.libraryExports[0])).toEqual({
+    ids: ['one', 'two'],
+    format: 'json',
+    includeTranscript: true,
+    includeAnnotations: false
+  })
+  await page.evaluate(() =>
+    window.mockState.finishLibraryExport?.({ success: false, canceled: true })
+  )
+  await expect(library.getByRole('button', { name: '导出所选（2）' })).toBeEnabled()
+  await expect(library.getByRole('alert')).toHaveCount(0)
+  await library.getByRole('button', { name: '导出所选（2）' }).click()
+  await page.evaluate(() =>
+    window.mockState.finishLibraryExport?.({ success: false, error: '模拟磁盘空间不足' })
+  )
+  await expect(library.getByRole('alert')).toContainText('模拟磁盘空间不足')
+  await library.getByRole('button', { name: '导出所选（2）' }).click()
+  await page.evaluate(() =>
+    window.mockState.finishLibraryExport?.({
+      success: true,
+      count: 2,
+      path: '/chosen/VidStudio-test'
+    })
+  )
+  await expect(library.getByRole('status')).toContainText('已导出 2 份资料')
+  await library.getByLabel('搜索标题、章节、原文和我的笔记').fill('one')
+  await expect(library.getByRole('button', { name: '导出所选（0）' })).toBeDisabled()
+  await expect(library.getByRole('status')).toHaveCount(0)
+  await expect(library.getByLabel('选择资料：资料 two', { exact: true })).toHaveCount(0)
+  await library.getByLabel('选择已显示资料', { exact: true }).check()
+  await expect(library.getByRole('button', { name: '导出所选（1）' })).toBeInViewport()
+  await page.screenshot({ path: test.info().outputPath('library-export-small.png') })
+  await page.keyboard.press('Escape')
+  await expect(library).not.toBeVisible()
+  await expect(trigger).toBeFocused()
+})
+
+test('bulk selection survives pagination, caps at 200 and clears when filtering changes', async ({
+  page
+}) => {
+  await page.evaluate(() => {
+    window.mockState.librarySize = 250
+  })
+  await page.getByRole('button', { name: '打开资料库' }).click()
+  const library = page.getByRole('dialog', { name: '资料库', exact: true })
+  await library.getByRole('button', { name: '批量导出', exact: true }).click()
+  await library.getByLabel('选择已显示资料', { exact: true }).check()
+  await expect(library.getByRole('button', { name: '导出所选（50）' })).toBeEnabled()
+  for (let pageNumber = 2; pageNumber <= 5; pageNumber++) {
+    await library.getByRole('button', { name: /加载更多/ }).click()
+    await expect(
+      library.getByLabel(`选择资料：资料 ${pageNumber * 50}`, { exact: true })
+    ).toHaveCount(1)
+  }
+  await expect(library.getByLabel('选择资料：资料 1', { exact: true })).toBeChecked()
+  const bulk = library.getByLabel('选择前 200 份已显示资料', { exact: true })
+  await bulk.check()
+  await expect(library.getByRole('button', { name: '导出所选（200）' })).toBeEnabled()
+  await expect(library.getByLabel('选择资料：资料 201', { exact: true })).toBeDisabled()
+  await bulk.uncheck()
+  await expect(library.getByLabel('选择资料：资料 201', { exact: true })).toBeEnabled()
+  await library.getByLabel('选择资料：资料 201', { exact: true }).check()
+  await library.getByLabel('仅看收藏资料', { exact: true }).check()
+  await expect(library.getByRole('button', { name: '导出所选（0）' })).toBeDisabled()
+  await expect(library.getByText('还没有收藏资料，点击资料旁的星标即可收藏。')).toBeVisible()
 })

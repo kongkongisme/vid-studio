@@ -11,6 +11,8 @@ import {
   getReadingStore
 } from './cache'
 import type { LibraryQuery } from '../shared/library'
+import type { LibraryExportRequest } from '../shared/library-export'
+import { exportLibrary } from './library-export'
 import {
   validateChatRequest,
   validateConversation,
@@ -1187,6 +1189,20 @@ ipcMain.handle('diagnose-environment', async () => {
 // ─── IPC：历史管理 ────────────────────────────────────────
 
 ipcMain.handle('get-history', () => getHistory())
+ipcMain.handle('export-library', (_, request: LibraryExportRequest) =>
+  exportLibrary(request, {
+    history: getHistory,
+    cache: getCachedContent,
+    annotations: (source) => getAnnotationStore().list(source),
+    chooseDirectory: async () => {
+      const result = await dialog.showOpenDialog({
+        title: '选择批量导出的保存文件夹',
+        properties: ['openDirectory', 'createDirectory']
+      })
+      return result.canceled ? null : (result.filePaths[0] ?? null)
+    }
+  })
+)
 ipcMain.handle('search-library', async (_, query: LibraryQuery) =>
   getLibraryIndex().search(await getHistory(), query)
 )
