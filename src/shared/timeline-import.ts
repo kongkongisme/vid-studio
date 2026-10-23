@@ -5,6 +5,7 @@ import {
   type TimelineChunk,
   type TranscriptLine
 } from './timeline'
+import { sourceTimestampUrl } from './source-links'
 
 export const MAX_IMPORT_BYTES = 10 * 1024 * 1024
 export const IMPORT_EXTENSIONS = new Set(['srt', 'vtt', 'md', 'json'])
@@ -264,7 +265,18 @@ export function importTimeline(fileName: string, raw: string): TimelineDocument 
       throw new Error(
         '没有找到时间轴章节。请导入 VidStudio 导出的 Markdown（## 00:00 - 02:00 | 标题）。'
       )
-    return { ...base, sourceKind: 'notes', chunks, warnings: [] }
+    let sourceUrl: string | undefined
+    if (content.startsWith('<!-- vidstudio:markdown:1 -->')) {
+      const encoded = content.match(/^<!-- vidstudio:source-url:([^\r\n]{1,4096}) -->$/m)?.[1]
+      try {
+        sourceUrl = encoded
+          ? (sourceTimestampUrl(decodeURIComponent(encoded), 0) ?? undefined)
+          : undefined
+      } catch {
+        /* Ignore damaged optional metadata. */
+      }
+    }
+    return { ...base, sourceKind: 'notes', sourceUrl, chunks, warnings: [] }
   }
   return { ...base, sourceKind: 'subtitle', ...parseSubtitles(content) }
 }

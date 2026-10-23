@@ -23,6 +23,7 @@ import LocalVideoPlayer from './components/LocalVideoPlayer.vue'
 import ExportDialog from './components/ExportDialog.vue'
 import DocumentReader from './components/DocumentReader.vue'
 import ChunkAnnotation from './components/ChunkAnnotation.vue'
+import SourceLinkButton from './components/SourceLinkButton.vue'
 import HistoryPanel from './components/HistoryPanel.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import { DEFAULT_PREFERENCES, type SettingsSnapshot } from '../../shared/settings'
@@ -1124,6 +1125,12 @@ function getExportSourceLabel(): string {
     return `来源：YouTube · ${activeSourceKey.value || url.value}`
   return `来源：${url.value || '未知'}`
 }
+
+const originalSourceUrl = computed(
+  () =>
+    importedDocument.value?.sourceUrl ??
+    (sourceMode.value === 'url' ? activeSourceKey.value || videoUrl.value || url.value : undefined)
+)
 
 function toExportText(value: unknown): string {
   return typeof value === 'string' ? value : String(value ?? '')
@@ -2530,6 +2537,10 @@ function handleGlobalPointerDown(e: PointerEvent): void {
                       </button>
                     </template>
                     <template #trailing>
+                      <SourceLinkButton
+                        :source-url="originalSourceUrl"
+                        :seconds="chunk.startSeconds"
+                      />
                       <button
                         class="flex items-center gap-1 text-slate-400 hover:text-blue-500"
                         title="引用此片段到对话"

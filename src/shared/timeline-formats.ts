@@ -1,5 +1,6 @@
 import type { TextExportFormat, TimelineExportPayload } from './export'
 import { timeToSeconds } from './timeline'
+import { sourceTimestampUrl } from './source-links'
 
 export const EXPORT_FORMATS: Record<TextExportFormat, { label: string; extension: string }> = {
   markdown: { label: 'Markdown 笔记', extension: 'md' },
@@ -17,8 +18,10 @@ function markdownText(value: string): string {
 }
 
 export function buildTimelineMarkdown(payload: TimelineExportPayload): string {
+  const source = sourceTimestampUrl(payload.sourceUrl, 0)
   const lines = [
     '<!-- vidstudio:markdown:1 -->',
+    ...(source ? [`<!-- vidstudio:source-url:${encodeURIComponent(source)} -->`] : []),
     `# ${markdownText(payload.title)}`,
     '',
     `> ${markdownText(payload.sourceLabel)}`,
@@ -27,6 +30,11 @@ export function buildTimelineMarkdown(payload: TimelineExportPayload): string {
   ]
   for (const chunk of payload.chunks) {
     lines.push(`## ${chunk.startTime} - ${chunk.endTime} | ${markdownText(chunk.title)}`, '')
+    const sourceLink = sourceTimestampUrl(
+      payload.sourceUrl,
+      chunk.startSeconds ?? timeToSeconds(chunk.startTime)
+    )
+    if (sourceLink) lines.push(`[回看原视频 · ${chunk.startTime}](${sourceLink})`, '')
     if (chunk.summary) lines.push(`**一句话总结**：${markdownText(chunk.summary)}`, '')
     if (chunk.keyPoints.length) {
       lines.push('**核心观点**', ...chunk.keyPoints.map((point) => `- ${markdownText(point)}`), '')

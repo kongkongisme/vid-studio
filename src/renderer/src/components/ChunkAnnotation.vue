@@ -21,9 +21,9 @@ watch(editorOpen, async (open) => {
 
 <template>
   <div class="mt-2">
-    <div class="flex items-center justify-between gap-2 text-[11px]">
+    <div class="flex flex-wrap items-center justify-between gap-2 text-[11px]">
       <slot name="leading" />
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2">
         <button
           class="flex items-center gap-1 rounded px-1 py-1 transition-colors disabled:opacity-40"
           :class="annotation?.bookmarked ? 'text-amber-600' : 'text-slate-400 hover:text-amber-600'"

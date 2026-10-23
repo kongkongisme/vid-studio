@@ -28,6 +28,8 @@ interface MockState {
   emitPlayback?: Parameters<NonNullable<Window['api']['onLocalPlaybackProgress']>>[0]
   libraryExports: Parameters<Window['api']['exportLibrary']>[0][]
   librarySize: number
+  clipboardWrites: string[]
+  failClipboardWrite: boolean
   finishLibraryExport?: (result: Awaited<ReturnType<Window['api']['exportLibrary']>>) => void
 }
 declare global {
@@ -57,7 +59,9 @@ async function installApi(page: Page): Promise<void> {
       failLoad: false,
       deferDiagnosis: false,
       libraryExports: [],
-      librarySize: 3
+      librarySize: 3,
+      clipboardWrites: [],
+      failClipboardWrite: false
     }
     window.mockState = state
     Object.defineProperty(navigator, 'clipboard', {
@@ -66,7 +70,10 @@ async function installApi(page: Page): Promise<void> {
           state.clipboardReads++
           return ''
         },
-        writeText: async () => undefined
+        writeText: async (text: string) => {
+          if (state.failClipboardWrite) throw new Error('Clipboard permission denied')
+          state.clipboardWrites.push(text)
+        }
       }
     })
     const api: Partial<Window['api']> = {
@@ -470,4 +477,59 @@ test('bulk selection survives pagination, caps at 200 and clears when filtering 
   await library.getByLabel('仅看收藏资料', { exact: true }).check()
   await expect(library.getByRole('button', { name: '导出所选（0）' })).toBeDisabled()
   await expect(library.getByText('还没有收藏资料，点击资料旁的星标即可收藏。')).toBeVisible()
+})
+
+test('copies canonical timestamp links from imported online sources and supports retry after clipboard errors', async ({
+  page
+}) => {
+  await page.getByRole('button', { name: '打开离线示例', exact: true }).click()
+  await expect(
+    page.getByRole('heading', { name: '从看过到记住：三步整理学习笔记', exact: true })
+  ).toBeVisible()
+  await expect(page.getByRole('button', { name: '导入资料', exact: true })).toBeEnabled()
+  await expect(page.getByRole('button', { name: '复制原视频链接', exact: true })).toHaveCount(0)
+  await page.getByLabel('选择字幕或笔记文件').setInputFiles({
+    name: 'linked.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        type: 'vidstudio-timeline',
+        version: 1,
+        title: '带来源的课程',
+        sourceKind: 'notes',
+        sourceUrl: 'https://youtu.be/abcdefgh-_1?si=tracking',
+        chunks: [
+          {
+            id: 'linked',
+            startSeconds: 65.5,
+            endSeconds: 120,
+            title: '带时间的章节',
+            summary: '回到证据',
+            transcript: []
+          }
+        ]
+      })
+    )
+  })
+  await page.setViewportSize({ width: 900, height: 600 })
+  await expect(page.getByRole('heading', { name: '带来源的课程', exact: true })).toBeVisible()
+  const copy = page.getByRole('button', { name: '复制原视频链接', exact: true })
+  await expect(copy).toBeInViewport()
+  await page.evaluate(() => {
+    window.mockState.failClipboardWrite = true
+  })
+  await copy.click()
+  await expect(page.getByRole('alert')).toContainText('复制失败，请重试')
+  await page.evaluate(() => {
+    window.mockState.failClipboardWrite = false
+  })
+  await copy.click()
+  await expect(
+    page.getByRole('status').filter({ hasText: '原视频时间戳链接已复制' })
+  ).toBeAttached()
+  expect(await page.evaluate(() => window.mockState.clipboardWrites)).toEqual([
+    'https://www.youtube.com/watch?v=abcdefgh-_1&t=65'
+  ])
+  await expect(page.getByText('复制失败，请重试')).toHaveCount(0)
+  await page.screenshot({ path: test.info().outputPath('source-link-small.png') })
 })

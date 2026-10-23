@@ -1,4 +1,6 @@
 import type { TimelineExportPayload } from '../shared/export'
+import { sourceTimestampUrl } from '../shared/source-links'
+import { timeToSeconds } from '../shared/timeline'
 export type { TimelineExportPayload } from '../shared/export'
 
 function escapeHtml(value: string): string {
@@ -82,6 +84,10 @@ export function buildTimelineExportHtml(payload: TimelineExportPayload): string 
         payload.includeAnnotations !== false && chunk.bookmarked
           ? '<span class="bookmark">已收藏</span>'
           : ''
+      const sourceLink = sourceTimestampUrl(
+        payload.sourceUrl,
+        chunk.startSeconds ?? timeToSeconds(chunk.startTime)
+      )
 
       return `
         <section class="chunk${transcript ? ' with-transcript' : ''}" aria-labelledby="section-${index + 1}">
@@ -89,6 +95,7 @@ export function buildTimelineExportHtml(payload: TimelineExportPayload): string 
           <div class="chunk-body">
             <div class="time">${escapeHtml(chunk.startTime)} - ${escapeHtml(chunk.endTime)} ${bookmark}</div>
             <h2 id="section-${index + 1}">${renderHighlightedText(chunk.title, highlightTerm)}</h2>
+            ${sourceLink ? `<a class="source-link" href="${escapeHtml(sourceLink)}">回看原视频 · ${escapeHtml(chunk.startTime)}</a>` : ''}
             ${chunk.summary ? `<p class="summary">${renderHighlightedText(chunk.summary, highlightTerm)}</p>` : ''}
             ${keyPoints ? `<ul>${keyPoints}</ul>` : ''}
             ${tags ? `<div class="tags">${tags}</div>` : ''}
@@ -204,6 +211,7 @@ export function buildTimelineExportHtml(payload: TimelineExportPayload): string 
       margin-bottom: 5px;
     }
     h2 { margin: 0 0 8px; font-size: 18px; line-height: 1.4; letter-spacing: 0; scroll-margin-top: 20px; }
+    .source-link { display: inline-block; margin: 0 0 10px; color: #2563eb; font-size: 12px; text-decoration: underline; }
     .summary { margin: 0 0 10px; color: #475569; font-size: 13px; line-height: 1.75; }
     ul { margin: 8px 0 10px; padding-left: 18px; }
     li { margin: 5px 0; color: #334155; font-size: 13px; line-height: 1.65; }

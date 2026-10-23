@@ -251,6 +251,46 @@ test('real IPC preserves imported sources, notes, exports and preferences across
         .locator('[id^="timeline-"]')
         .getByText('用缓存失效时间平衡成本和新鲜度。', { exact: true })
     ).toBeVisible()
+    await expect(page.getByRole('button', { name: '导入资料', exact: true })).toBeEnabled()
+    await page.getByLabel('选择字幕或笔记文件').setInputFiles({
+      name: 'linked.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(
+        JSON.stringify({
+          type: 'vidstudio-timeline',
+          version: 1,
+          title: '原视频链接验收',
+          sourceKind: 'notes',
+          sourceUrl: 'https://youtu.be/abcdefgh-_1?si=tracking',
+          chunks: [
+            {
+              startSeconds: 65,
+              endSeconds: 120,
+              title: '回看证据',
+              summary: '原视频链接应保留在 PDF 中。',
+              transcript: []
+            }
+          ]
+        })
+      )
+    })
+    await expect(
+      reader().getByRole('heading', { name: '原视频链接验收', exact: true })
+    ).toBeVisible()
+    const linkedPdfPath = testInfo.outputPath('linked-source.pdf')
+    await application!.evaluate(({ dialog }, filePath) => {
+      dialog.showSaveDialog = async () => ({ canceled: false, filePath })
+    }, linkedPdfPath)
+    await page.getByRole('button', { name: '导出', exact: true }).click()
+    const linkedExportDialog = page.getByRole('dialog', { name: '导出时间轴', exact: true })
+    await linkedExportDialog
+      .getByRole('combobox', { name: '文件格式', exact: true })
+      .selectOption('pdf')
+    await linkedExportDialog.getByRole('button', { name: '选择保存位置' }).click()
+    await expect(linkedExportDialog).not.toBeVisible()
+    expect((await readFile(linkedPdfPath)).toString('latin1')).toContain(
+      'https://www.youtube.com/watch?v=abcdefgh-_1&t=65'
+    )
     expect(rendererErrors).toEqual([])
   } finally {
     await application?.close().catch(() => undefined)
